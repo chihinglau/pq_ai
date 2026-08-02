@@ -299,8 +299,34 @@ file pq_sim
 
 ---
 
+## 版本历史
+
+### v2.0.0 (2026-08-02) — 完整复现版
+
+- WSL Ubuntu 26.04 + GCC 15.2.0 部署验证通过
+- Makefile + CMake 双构建系统（Windows MinGW / Linux GCC / aarch64 交叉编译）
+- S1~S5 五场景仿真验证（每个 100 周期），事件触发与治理建议正确
+- 12 项 PQ 指标实时计算（基于 GB/T 12325/14549/15543/15945 国标）
+- 7 通道 HT7627S 软件模拟器（12800Hz 采样，256 点/周波，2~31 次谐波）
+- AI 推理 Stub（iForest / AE / 1D-CNN），待 NPU 工具链就绪后替换为 INT8 量化模型
+- MQTT 上报 Stub + CSV 本地存储
+- GitHub 仓库初始化与推送
+- 根级 README.md 与 DOCUMENTATION.md 创建
+- 版本权威源：`pq_ai_terminal/include/pq_version.h`
+
+### v1.0.0 (2026-08-01) — 初始版本
+
+- 基础仿真框架搭建
+- 五类场景定义（S1 基准 / S2 充电桩 / S3 光伏 / S4 光充耦合 / S5 极端）
+- 核心算法层（pq_metrics / event_trigger / wave_freeze / feature_extract / scenario_detect）
+- MATLAB 时域仿真引擎（纯 MATLAB，不依赖 Simulink 建模）
+- 蒙特卡洛风险评估与 AI 数据集生成
+
+---
+
 ## 维护信息
 
 - **维护团队**：嵌入式软件团队 + 算法仿真团队
-- **文档版本**：v2.0（2026-08-02）
+- **文档版本**：v2.0.0（2026-08-02）
+- **版本权威源**：[pq_ai_terminal/include/pq_version.h](pq_ai_terminal/include/pq_version.h)
 - **GitHub**：[https://github.com/chihinglau/pq_ai](https://github.com/chihinglau/pq_ai)
