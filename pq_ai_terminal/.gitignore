@@ -1,0 +1,35 @@
+# Build artifacts
+*.o
+*.obj
+*.exe
+*.dll
+*.so
+*.a
+*.lib
+build/
+build-win/
+build-ninja/
+build-linux/
+
+# Simulation outputs
+*.csv
+report_S*.txt
+pq_metrics_*.txt
+pq_events_*.txt
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+test_*.c
+test_*.exe
+hal_err*.txt
+sim_main.i

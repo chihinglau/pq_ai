@@ -1,0 +1,62 @@
+# ==================== Build artifacts ====================
+*.o
+*.obj
+*.exe
+*.dll
+*.so
+*.a
+*.lib
+*.elf
+
+# ==================== Build directories ====================
+build/
+build-win/
+build-ninja/
+build-linux/
+*.dir/
+
+# ==================== MATLAB simulation outputs ====================
+# 大体积二进制仿真产物，由源码重新运行生成
+matlab_sim/results/
+matlab_sim/dataset/
+matlab_sim/data/
+
+# ==================== C simulation outputs ====================
+pq_ai_terminal/pq_sim
+pq_ai_terminal/pq_sim.exe
+pq_ai_terminal/*.csv
+pq_ai_terminal/sim_main.err
+pq_ai_terminal/sim_main.i
+
+# ==================== Test scratch files ====================
+t.c
+t.exe
+t2.c
+t3.c
+test_*.c
+test_*.exe
+test_*.o
+
+# ==================== Reports (generated) ====================
+report*.txt
+
+# ==================== Skill / tool files ====================
+skill_github_repo_access.md
+
+# ==================== IDE ====================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ==================== OS ====================
+.DS_Store
+Thumbs.db
+
+# ==================== Node ====================
+node_modules/
+
+# ==================== Logs / temp ====================
+*.log
+*.tmp
