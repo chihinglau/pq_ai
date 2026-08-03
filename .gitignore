@@ -54,6 +54,9 @@ skill_github_repo_access.md
 .DS_Store
 Thumbs.db
 
+# ==================== Office temp files ====================
+~$*
+
 # ==================== Node ====================
 node_modules/
 
