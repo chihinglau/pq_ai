@@ -1,6 +1,6 @@
 # PQ AI Terminal — 开发部署文档
 
-> **版本**：v2.0.0 ｜ **日期**：2026-08-02 ｜ **状态**：已验证
+> **版本**：v2.1.0 ｜ **日期**：2026-08-02 ｜ **状态**：已验证
 > **版本权威源**：`pq_ai_terminal/include/pq_version.h`
 > **GitHub**：[https://github.com/chihinglau/pq_ai](https://github.com/chihinglau/pq_ai)
 
@@ -25,7 +25,7 @@
 
 **项目全称**：基于终端交流采样波形数据的电能质量 AI 应用 —— 新能源与充电桩接入影响评估
 
-**目标平台**：全志 T536（4×Cortex-A55 + 2T NPU + E907 RISC-V） + 钜泉 HT7627S（7 通道 24bit 高精度计量 AFE）
+**目标平台**：全志 T536（4×Cortex-A55 + E907 RISC-V） + 钜泉 HT7627S（7 通道 24bit AFE） + 瑞芯微 RK3576（外挂算力模组，USB ECM 互连）
 
 **核心能力**：
 - MATLAB 时域仿真（S1~S5 五场景 + 蒙特卡洛 + AI 数据集）
@@ -122,21 +122,35 @@ make sim
 
 **环境**：WSL Ubuntu 26.04 + GCC 15.2.0 + Make 4.4.1 + CMake 4.2.3
 
-**编译**：16 个源文件全部干净编译（`-std=c99 -Wall -Wextra -O2 -DPLATFORM_LINUX`，无警告）。
+**编译**：20 个源文件全部干净编译（`-std=c99 -Wall -Wextra -O2 -DPLATFORM_LINUX`，无警告），链接 `-lm -lpthread`。
 
-`./pq_sim --all --cycles 100` 运行结果：
+`./pq_sim --all --cycles 100` 运行结果（v2.1.0 双机架构）：
 
-| 场景 | 触发事件数 | 总评 | 事件类型 | 治理建议 |
-|------|-----------|------|----------|----------|
-| S1 基准负荷 | 0 | FAIL | — | 系统运行正常，继续监测 |
-| S2 充电桩 | 100 | FAIL | HARMONIC（电压 THD） | 配置 APF；实施有序充电策略 |
-| S3 分布式光伏 | 0 | **PASS** | — | 优化光伏逆变器无功调节策略 |
-| S4 光充耦合 | 100 | FAIL | HARMONIC（电流 THD） | 配置储能系统平滑功率波动 |
-| S5 极端场景 | 100 | FAIL | HARMONIC（电流 THD） | 立即启动负荷切除；投入备用容量 |
+| 场景 | 触发事件数 | 总评 | AI 模组 | 事件类型 | 治理建议 |
+|------|-----------|------|---------|----------|----------|
+| S1 基准负荷 | 0 | FAIL | **ONLINE** | — | 系统运行正常，继续监测 |
+| S2 充电桩 | 100 | FAIL | **ONLINE** | HARMONIC（电压 THD） | 配置 APF；实施有序充电策略 |
+| S3 分布式光伏 | 0 | **PASS** | **ONLINE** | — | 优化光伏逆变器无功调节策略 |
+| S4 光充耦合 | 100 | FAIL | **ONLINE** | HARMONIC（电流 THD） | 配置储能系统平滑功率波动 |
+| S5 极端场景 | 100 | FAIL | **ONLINE** | HARMONIC（电流 THD） | 立即启动负荷切除；投入备用容量 |
+
+> 全 500 周期 AI 算力模组（RK3576 via USB ECM）均保持 ONLINE。
 
 ---
 
 ## 6. 关键功能实现记录
+
+### v2.1.0 (2026-08-02) — 双机协作架构版
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| USB ECM 传输层（comm/usb_ecm.c） | ✅ 完成 | 跨平台 TCP socket（Winsock2/BSD），USB ECM 虚拟网卡通信 |
+| AI RPC 客户端（ai/ai_rpc.c） | ✅ 完成 | JSON over TCP，带本地 fallback 降级 |
+| 算力模组仿真器（sim/compute_module_sim.c） | ✅ 完成 | RK3576 模拟，后台 TCP 服务线程，运行 iForest/AE/CNN1D |
+| sim_main.c 双机架构 | ✅ 完成 | 启动算力模组 → ai_rpc 推理 → 优雅关闭 |
+| config.ini 算力模组配置 | ✅ 完成 | [compute_module] 段（enabled/ip/port） |
+| S1~S5 全场景 USB ECM 验证 | ✅ 验证 | 500 周期 AI 模组全部 ONLINE |
+| T536 NPU 依赖移除 | ✅ 完成 | T536 仅负责采样+指标，AI 推理迁移至 RK3576 |
 
 ### v2.0.0 (2026-08-02) — 完整复现版
 
@@ -174,11 +188,12 @@ make sim
 ### 7.1 待完成项
 
 1. **真实 HT7627S 驱动**：替换 `sim/hal_sim.c` 为 SPI/I2C 驱动
-2. **NPU 模型部署**：ONNX → INT8 量化 → T536 NPU SDK
-3. **E907 RTOS 集成**：核心采集任务迁移至 E907 核
-4. **rpmsg 核间通信**：E907 与 A55 之间的消息队列
-5. **IEC 61850 / MQTT 完整协议栈**：替换 Stub，支持 TLS
-6. **SQLite 本地存储**：替换 CSV 为嵌入式 SQLite
+2. **RK3576 算力模组程序**：在 RK3576 上部署独立 AI 服务程序（替换 compute_module_sim）
+3. **USB ECM 真实驱动**：Linux g_nc / g_ether 配置，T536 与 RK3576 各呈现为虚拟网卡
+4. **大模型部署**：在 RK3576 上部署训练好的 ONNX 模型 → INT8 量化 → RKNN SDK
+5. **E907 RTOS 集成**：核心采集任务迁移至 E907 核
+6. **IEC 61850 / MQTT 完整协议栈**：替换 Stub，支持 TLS
+7. **SQLite 本地存储**：替换 CSV 为嵌入式 SQLite
 
 ### 7.2 已知局限
 

@@ -15,6 +15,9 @@
 #include "iforest_infer.h"
 #include "ae_infer.h"
 #include "cnn1d_infer.h"
+#include "ai_rpc.h"
+#include "usb_ecm.h"
+#include "compute_module_sim.h"
 #include "proto_mqtt.h"
 #include "time_sync.h"
 #include "sqlite_wrapper.h"
@@ -31,7 +34,8 @@ static void print_header(void)
     printf("\n");
     printf("============================================================\n");
     printf("  PQ AI Terminal - Soft Simulation Environment\n");
-    printf("  Platform: T536 + HT7627S\n");
+    printf("  Host:    T536 + HT7627S  (sampling & PQ metrics)\n");
+    printf("  Compute: RK3576          (AI inference via USB ECM)\n");
     printf("============================================================\n\n");
 }
 
@@ -106,7 +110,7 @@ static int run_single_scenario(const char *scenario, int max_cycles)
     pq_metrics_t metrics = {0};
     wave_freeze_buffer_t wbuf = {0};
     feature_vector_t feat = {0};
-    iforest_model_t if_model = {0};
+    ai_result_t ai_res = {0};
     pq_event_t event = {0};
     scenario_type_t scen = SCENARIO_UNKNOWN;
     int event_count = 0;
@@ -151,9 +155,7 @@ static int run_single_scenario(const char *scenario, int max_cycles)
     wave_freeze_init(&wbuf);
     feature_extract_init();
     scenario_detect_init();
-    iforest_load_model(&if_model, NULL);
-    ae_init(IF_N_FEATURES, 8);
-    cnn1d_init(7, cfg.pts_per_cycle);
+    /* AI 模型加载在算力模组侧（RK3576），主机通过 ai_rpc 远程调用 */
 
     PQ_LOGI("All modules initialized. Starting simulation...");
 
@@ -185,11 +187,11 @@ static int run_single_scenario(const char *scenario, int max_cycles)
             mqtt_publish("pq/terminal/event", json_buf, 1);
         }
 
-        /* 5. 特征提取与AI推理 */
+        /* 5. 特征提取与AI推理（通过USB ECM发送给RK3576算力模组） */
         feature_extract_from_wave(wbuf.cycles, wbuf.count, &metrics, &feat);
 
-        float if_score = iforest_score(&if_model, feat.features);
-        float ae_score = ae_anomaly_score(feat.features);
+        /* AI 推理在 RK3576 算力模组上执行，主机通过 USB ECM RPC 调用 */
+        ai_rpc_infer(&feat, &metrics, &ai_res);
 
         /* 6. 场景识别 */
         scen = scenario_detect_classify(&metrics, &feat);
@@ -198,9 +200,10 @@ static int run_single_scenario(const char *scenario, int max_cycles)
         if (i % 50 == 0) {
             json_begin(json_buf, sizeof(json_buf));
             json_add_string(json_buf, sizeof(json_buf), "scenario", scenario_name(scen), 0);
-            json_add_float(json_buf, sizeof(json_buf), "if_score", if_score, 0);
-            json_add_float(json_buf, sizeof(json_buf), "ae_score", ae_score, 0);
-            json_add_int(json_buf, sizeof(json_buf), "cycle", i, 1);
+            json_add_float(json_buf, sizeof(json_buf), "if_score", ai_res.if_score, 0);
+            json_add_float(json_buf, sizeof(json_buf), "ae_score", ai_res.ae_score, 0);
+            json_add_int(json_buf, sizeof(json_buf), "cnn_class", ai_res.cnn_class, 0);
+            json_add_int(json_buf, sizeof(json_buf), "ai_module", ai_res.module_available, 1);
             json_end(json_buf, sizeof(json_buf));
             mqtt_publish("pq/terminal/status", json_buf, 0);
         }
@@ -212,8 +215,11 @@ static int run_single_scenario(const char *scenario, int max_cycles)
         if (i % 50 == 0 || event_count > 0) {
             printf("\n--- Cycle %d (scenario=%s) ---\n", i, scenario_name(scen));
             print_metrics(&metrics);
-            printf("  %-24s %8.3f\n", "IF Anomaly Score", if_score);
-            printf("  %-24s %8.3f\n", "AE Anomaly Score", ae_score);
+            printf("  %-24s %8.3f\n", "IF Anomaly Score", ai_res.if_score);
+            printf("  %-24s %8.3f\n", "AE Anomaly Score", ai_res.ae_score);
+            printf("  %-24s %d (conf=%.3f)\n", "CNN Event Class", ai_res.cnn_class, ai_res.cnn_confidence);
+            printf("  %-24s %s\n", "AI Compute Module",
+                   ai_res.module_available ? "ONLINE (RK3576 via USB ECM)" : "OFFLINE (local fallback)");
         }
 
         /* 10. 模拟20ms周期 */
@@ -240,6 +246,26 @@ int sim_main(int argc, char *argv[])
     int max_cycles = 100;
     int run_all = 0;
     const char *all_scenarios[] = {"S1", "S2", "S3", "S4", "S5"};
+
+    /* 加载配置 */
+    pq_config_t sys_cfg = {0};
+    config_load(&sys_cfg, "config.ini");
+
+    /* 启动 RK3576 算力模组仿真器（仿真模式） */
+    const char *cm_ip = config_get_string(&sys_cfg, "compute_module.ip", USB_ECM_SIM_IP);
+    int cm_port = config_get_int(&sys_cfg, "compute_module.port", USB_ECM_DEFAULT_PORT);
+    int cm_enabled = config_get_int(&sys_cfg, "compute_module.enabled", 1);
+
+    if (cm_enabled) {
+        if (compute_module_sim_start(cm_ip, cm_port) == 0) {
+            printf("[INIT] RK3576 compute module simulator started (%s:%d)\n", cm_ip, cm_port);
+        }
+        /* 初始化 AI RPC 客户端（主机侧，通过 USB ECM 连接算力模组） */
+        ai_rpc_init(cm_ip, cm_port);
+    } else {
+        printf("[INIT] Compute module disabled, AI will use local fallback\n");
+        ai_rpc_init(USB_ECM_SIM_IP, cm_port);
+    }
 
     /* 解析命令行 */
     for (i = 1; i < argc; i++) {
@@ -273,6 +299,12 @@ int sim_main(int argc, char *argv[])
         }
     } else {
         run_single_scenario(scenario, max_cycles);
+    }
+
+    /* 清理：关闭 AI RPC 和算力模组仿真器 */
+    ai_rpc_deinit();
+    if (cm_enabled) {
+        compute_module_sim_stop();
     }
 
     return 0;

@@ -26,10 +26,10 @@ INCLUDES = -Iinclude -Icore -Iai -Icomm -Iutils -Isim -Idrivers
 # Sources
 CORE_SRCS = core/pq_metrics.c core/event_trigger.c core/wave_freeze.c \
             core/feature_extract.c core/scenario_detect.c
-AI_SRCS = ai/iforest_infer.c ai/ae_infer.c ai/cnn1d_infer.c
-COMM_SRCS = comm/proto_mqtt.c comm/time_sync.c
+AI_SRCS = ai/iforest_infer.c ai/ae_infer.c ai/cnn1d_infer.c ai/ai_rpc.c
+COMM_SRCS = comm/proto_mqtt.c comm/time_sync.c comm/usb_ecm.c
 UTILS_SRCS = utils/ring_buffer.c utils/json_builder.c utils/sqlite_wrapper.c utils/pq_config.c
-SIM_SRCS = sim/sim_main.c sim/hal_sim.c
+SIM_SRCS = sim/sim_main.c sim/hal_sim.c sim/compute_module_sim.c
 
 ALL_SRCS = $(CORE_SRCS) $(AI_SRCS) $(COMM_SRCS) $(UTILS_SRCS) $(SIM_SRCS)
 OBJS = $(ALL_SRCS:.c=.o)

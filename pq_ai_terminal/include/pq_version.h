@@ -20,12 +20,12 @@
 
 /* ==================== 当前版本（权威来源） ==================== */
 #define PQ_VERSION_MAJOR    2
-#define PQ_VERSION_MINOR    0
+#define PQ_VERSION_MINOR    1
 #define PQ_VERSION_PATCH    0
 
-#define PQ_VERSION_STRING   "2.0.0"
+#define PQ_VERSION_STRING   "2.1.0"
 #define PQ_VERSION_DATE     "2026-08-02"
-#define PQ_VERSION_TITLE    "完整复现版"
+#define PQ_VERSION_TITLE    "双机协作架构版"
 
 /* ==================== 版本宏便捷接口 ==================== */
 #define PQ_VERSION_NUM      ((PQ_VERSION_MAJOR << 16) | \
@@ -34,6 +34,16 @@
 
 /* ==================== 变更日志（CHANGELOG） ==================== */
 /**
+ * v2.1.0 (2026-08-02) —— 双机协作架构版
+ *   - 架构变更：T536 不带 NPU，新增 RK3576 算力模组通过 USB ECM 外挂
+ *   - 主机 T536+HT7627S 负责采样 + PQ 指标 + 事件触发 + 特征提取
+ *   - 算力模组 RK3576 负责 iForest/AE/CNN1D/大模型推理
+ *   - 新增 comm/usb_ecm 传输层（USB ECM 虚拟网卡 TCP 通信，跨平台）
+ *   - 新增 ai/ai_rpc 客户端（主机侧，JSON over TCP，带本地 fallback）
+ *   - 新增 sim/compute_module_sim 仿真器（RK3576 模拟，后台 TCP 服务线程）
+ *   - sim_main.c 改为通过 USB ECM RPC 调用 AI，500 周期全部 ONLINE
+ *   - config.ini 新增 [compute_module] 配置段
+ *
  * v2.0.0 (2026-08-02) —— 完整复现版
  *   - WSL Ubuntu 26.04 + GCC 15.2.0 部署验证通过
  *   - Makefile + CMake 双构建系统（支持 Windows MinGW / Linux GCC / aarch64 交叉编译）
