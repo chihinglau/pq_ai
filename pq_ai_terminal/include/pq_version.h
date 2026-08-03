@@ -21,11 +21,11 @@
 /* ==================== 当前版本（权威来源） ==================== */
 #define PQ_VERSION_MAJOR    2
 #define PQ_VERSION_MINOR    1
-#define PQ_VERSION_PATCH    0
+#define PQ_VERSION_PATCH    1
 
-#define PQ_VERSION_STRING   "2.1.0"
-#define PQ_VERSION_DATE     "2026-08-02"
-#define PQ_VERSION_TITLE    "双机协作架构版"
+#define PQ_VERSION_STRING   "2.1.1"
+#define PQ_VERSION_DATE     "2026-08-03"
+#define PQ_VERSION_TITLE    "双机协作架构版（诊断增强）"
 
 /* ==================== 版本宏便捷接口 ==================== */
 #define PQ_VERSION_NUM      ((PQ_VERSION_MAJOR << 16) | \
@@ -34,6 +34,18 @@
 
 /* ==================== 变更日志（CHANGELOG） ==================== */
 /**
+ * v2.1.1 (2026-08-03) —— 双机协作架构版（诊断增强）
+ *   - USB ECM 传输层（comm/usb_ecm.c）添加详细诊断日志：
+ *     connect/send/recv/request 关键节点记录 errno、字节数、往返耗时
+ *   - AI RPC 客户端（ai/ai_rpc.c）添加推理全链路日志：
+ *     请求构建、推理结果、降级触发、恢复重连、累计统计（success_rate）
+ *   - 算力模组仿真器（sim/compute_module_sim.c）添加推理各阶段耗时分解：
+ *     parse/sleep/infer/send 各阶段微秒级计时
+ *   - 新增 tests/test_usb_ecm_ai_rpc.c 单元测试（13 项测试，覆盖正常+降级+恢复场景）
+ *   - Makefile 新增 test 目标，支持 mingw32-make test 一键编译运行
+ *   - 重构 Linux环境技术方案.md（14 章完整技术方案，含 USB ECM 驱动配置与双机部署）
+ *   - 重构 pq_ai_terminal/README.md（双机架构图、模块说明、验证项表）
+ *
  * v2.1.0 (2026-08-02) —— 双机协作架构版
  *   - 架构变更：T536 不带 NPU，新增 RK3576 算力模组通过 USB ECM 外挂
  *   - 主机 T536+HT7627S 负责采样 + PQ 指标 + 事件触发 + 特征提取

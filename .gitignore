@@ -33,7 +33,9 @@ t.c
 t.exe
 t2.c
 t3.c
-test_*.c
+# 注意：tests/ 目录下的正式测试源码不排除（如 test_usb_ecm_ai_rpc.c）
+# 仅排除根目录下的临时测试文件
+/test_*.c
 test_*.exe
 test_*.o
 

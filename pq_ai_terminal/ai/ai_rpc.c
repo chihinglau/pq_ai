@@ -22,6 +22,8 @@
 static usb_ecm_t        g_ecm;
 static int              g_rpc_init = 0;
 static int              g_module_online = 0;
+static int              g_infer_count = 0;       /* 累计推理次数 */
+static int              g_fallback_count = 0;    /* 累计降级次数 */
 
 /* 本地 fallback 模型（仅当算力模组不可达时使用） */
 static iforest_model_t  g_local_if;
@@ -29,6 +31,18 @@ static int              g_local_loaded = 0;
 
 /* 超时配置（ms） */
 #define AI_RPC_TIMEOUT_MS   2000
+
+/* ==================== 跨平台毫秒计时器 ==================== */
+static uint64_t ai_now_ms(void)
+{
+#if defined(PLATFORM_WINDOWS) || defined(_WIN32)
+    return (uint64_t)GetTickCount64();
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000U + (uint64_t)ts.tv_nsec / 1000000U;
+#endif
+}
 
 /* ==================== 构建 JSON 请求 ==================== */
 static int build_request(char *buf, int buf_size,
@@ -134,7 +148,10 @@ int ai_rpc_init(const char *module_ip, int port)
                  (port > 0) ? port : USB_ECM_DEFAULT_PORT);
     g_rpc_init = 1;
     g_module_online = 0;
-    PQ_LOGI("ai_rpc: initialized (target=%s:%d)", g_ecm.host_ip, g_ecm.port);
+    g_infer_count = 0;
+    g_fallback_count = 0;
+    PQ_LOGI("ai_rpc: initialized (target=%s:%d, timeout=%d ms)",
+            g_ecm.host_ip, g_ecm.port, AI_RPC_TIMEOUT_MS);
     return 0;
 }
 
@@ -145,17 +162,33 @@ int ai_rpc_infer(const feature_vector_t *feat,
     char request[USB_ECM_MAX_PACKET];
     char response[512];
     int  ret;
+    uint64_t t0, t1;
 
     if (!g_rpc_init || feat == NULL || metrics == NULL || result == NULL) {
+        PQ_LOGE("ai_rpc: invalid args (init=%d, feat=%p, metrics=%p, result=%p)",
+                g_rpc_init, (const void *)feat, (const void *)metrics,
+                (const void *)result);
         return -1;
     }
 
+    g_infer_count++;
+    t0 = ai_now_ms();
+
     /* 构建请求 */
     if (build_request(request, sizeof(request), feat, metrics) != 0) {
-        PQ_LOGE("ai_rpc: build_request failed");
+        PQ_LOGE("ai_rpc: build_request failed (n_features=%d)", feat->n_features);
         local_infer(feat, result);
+        g_fallback_count++;
+        t1 = ai_now_ms();
+        PQ_LOGW("ai_rpc: fallback to local (reason=build_request, latency=%llu ms, "
+                "total_fallback=%d/%d)",
+                (unsigned long long)(t1 - t0), g_fallback_count, g_infer_count);
         return 0;
     }
+
+    PQ_LOGI("ai_rpc: infer #%d, request %d B (n_feat=%d, vthd=%.2f, ithd=%.2f)",
+            g_infer_count, (int)strlen(request), feat->n_features,
+            metrics->voltage_thd.value, metrics->current_thd.value);
 
     /* 通过 USB ECM 发送请求并等待应答 */
     ret = usb_ecm_request(&g_ecm, request, response, sizeof(response),
@@ -166,17 +199,36 @@ int ai_rpc_infer(const feature_vector_t *feat,
         parse_response(response, result);
         result->module_available = 1;
         if (!g_module_online) {
-            PQ_LOGI("ai_rpc: compute module ONLINE (RK3576 via USB ECM)");
+            PQ_LOGI("ai_rpc: compute module ONLINE (RK3576 via USB ECM) "
+                    "[recovered after %d fallbacks]", g_fallback_count);
             g_module_online = 1;
         }
+        t1 = ai_now_ms();
+        result->latency_ms = (int)(t1 - t0);
+        PQ_LOGI("ai_rpc: infer OK #%d (if=%.4f, ae=%.2f, cls=%d, conf=%.4f, "
+                "latency=%d ms)",
+                g_infer_count, result->if_score, result->ae_score,
+                result->cnn_class, result->cnn_confidence, result->latency_ms);
     } else {
         /* 算力模组不可达，降级为本地推理 */
+        g_fallback_count++;
         if (g_module_online) {
-            PQ_LOGW("ai_rpc: compute module offline, fallback to local stub");
+            PQ_LOGW("ai_rpc: compute module OFFLINE, fallback to local stub "
+                    "(reason=usb_ecm_request ret=%d, total_fallback=%d/%d)",
+                    ret, g_fallback_count, g_infer_count);
             g_module_online = 0;
+        } else {
+            /* 已离线状态，避免每周期刷屏，仅每 10 次打印一次 */
+            if (g_fallback_count % 10 == 0) {
+                PQ_LOGW("ai_rpc: still offline, %d consecutive fallbacks "
+                        "(total_infer=%d)", g_fallback_count, g_infer_count);
+            }
         }
         usb_ecm_disconnect(&g_ecm);
         local_infer(feat, result);
+        t1 = ai_now_ms();
+        PQ_LOGW("ai_rpc: local fallback #%d done (latency=%llu ms)",
+                g_infer_count, (unsigned long long)(t1 - t0));
     }
 
     return 0;
@@ -190,8 +242,11 @@ int ai_rpc_module_online(void)
 void ai_rpc_deinit(void)
 {
     if (!g_rpc_init) return;
+    PQ_LOGI("ai_rpc: deinit (total_infer=%d, total_fallback=%d, success_rate=%.1f%%)",
+            g_infer_count, g_fallback_count,
+            g_infer_count > 0 ?
+            100.0f * (g_infer_count - g_fallback_count) / g_infer_count : 0.0f);
     usb_ecm_disconnect(&g_ecm);
     g_rpc_init = 0;
     g_module_online = 0;
-    PQ_LOGI("ai_rpc: deinitialized");
 }

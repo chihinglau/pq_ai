@@ -1,6 +1,6 @@
 # PQ AI Terminal — 开发部署文档
 
-> **版本**：v2.1.0 ｜ **日期**：2026-08-02 ｜ **状态**：已验证
+> **版本**：v2.1.1 ｜ **日期**：2026-08-03 ｜ **状态**：已验证
 > **版本权威源**：`pq_ai_terminal/include/pq_version.h`
 > **GitHub**：[https://github.com/chihinglau/pq_ai](https://github.com/chihinglau/pq_ai)
 
@@ -139,6 +139,18 @@ make sim
 ---
 
 ## 6. 关键功能实现记录
+
+### v2.1.1 (2026-08-03) — 双机协作架构版（诊断增强）
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| USB ECM 诊断日志（comm/usb_ecm.c） | ✅ 完成 | connect/send/recv/request 关键节点记录 errno、字节数、往返耗时 |
+| AI RPC 全链路日志（ai/ai_rpc.c） | ✅ 完成 | 请求构建、推理结果、降级触发、恢复重连、累计统计（success_rate） |
+| 仿真器耗时分解（sim/compute_module_sim.c） | ✅ 完成 | parse/sleep/infer/send 各阶段微秒级计时 |
+| USB ECM + AI RPC 单元测试 | ✅ 完成 | 13 项测试，覆盖正常流程+异常降级+恢复场景，全部通过 |
+| Makefile test 目标 | ✅ 完成 | `mingw32-make test` / `make test` 一键编译运行 |
+| Linux 环境技术方案重构 | ✅ 完成 | 14 章完整方案，含 USB ECM 驱动配置与双机部署路径 |
+| pq_ai_terminal/README.md 重构 | ✅ 完成 | 双机架构图、模块说明、验证项表、版本历史更新 |
 
 ### v2.1.0 (2026-08-02) — 双机协作架构版
 

@@ -36,6 +36,9 @@
     typedef HANDLE thread_t;
     #define SOCK_INVALID  INVALID_SOCKET
     #define SOCK_CLOSE     closesocket
+    #define PQ_SOCK_ERRNO  WSAGetLastError()
+    static const char *cm_wsa_strerror(int e);
+    #define PQ_SOCK_STRERROR(e) cm_wsa_strerror(e)
 #else
     #include <sys/types.h>
     #include <sys/socket.h>
@@ -43,10 +46,14 @@
     #include <arpa/inet.h>
     #include <unistd.h>
     #include <pthread.h>
+    #include <errno.h>
+    #include <time.h>
     typedef int socket_t;
     typedef pthread_t thread_t;
     #define SOCK_INVALID  (-1)
     #define SOCK_CLOSE     close
+    #define PQ_SOCK_ERRNO  errno
+    #define PQ_SOCK_STRERROR(e) strerror(e)
 #endif
 
 /* ==================== 模块状态 ==================== */
@@ -117,8 +124,38 @@ static int build_infer_response(char *buf, int buf_size,
     return (n > 0 && n < buf_size) ? 0 : -1;
 }
 
+/* ==================== 跨平台毫秒计时器 ==================== */
+static uint64_t cm_now_ms(void)
+{
+#if defined(PLATFORM_WINDOWS) || defined(_WIN32)
+    return (uint64_t)GetTickCount64();
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000U + (uint64_t)ts.tv_nsec / 1000000U;
+#endif
+}
+
+#if defined(PLATFORM_WINDOWS) || defined(_WIN32)
+static const char *cm_wsa_strerror(int e)
+{
+    static char buf[64];
+    switch (e) {
+        case WSAECONNREFUSED:  return "WSAECONNREFUSED (connection refused)";
+        case WSAETIMEDOUT:     return "WSAETIMEDOUT (timeout)";
+        case WSAECONNRESET:    return "WSAECONNRESET (connection reset)";
+        case WSAECONNABORTED:  return "WSAECONNABORTED (aborted)";
+        case WSAENETUNREACH:   return "WSAENETUNREACH (network unreachable)";
+        case WSAEHOSTUNREACH:  return "WSAEHOSTUNREACH (host unreachable)";
+        default:
+            snprintf(buf, sizeof(buf), "WSA error %d", e);
+            return buf;
+    }
+}
+#endif
+
 /* ==================== 处理单个推理请求 ==================== */
-static void handle_infer(socket_t client_fd, const char *request)
+static void handle_infer(socket_t client_fd, const char *request, int req_len)
 {
     float features[IF_N_FEATURES];
     float vthd, ithd;
@@ -127,13 +164,20 @@ static void handle_infer(socket_t client_fd, const char *request)
     float cnn_conf = 0.0f;
     int   cnn_class = 0;
     char  response[512];
+    uint64_t t0, t1, t2, t3, t4;
+    int resp_len;
+
+    t0 = cm_now_ms();
 
     /* 解析请求 */
     if (parse_infer_request(request, features, IF_N_FEATURES, &vthd, &ithd) != 0) {
         const char *err = "{\"error\":\"bad request\"}";
+        PQ_LOGW("compute_module_sim: bad request (len=%d)", req_len);
         send(client_fd, err, (int)strlen(err), 0);
         return;
     }
+
+    t1 = cm_now_ms();
 
     /* 模拟推理耗时 */
 #if defined(PLATFORM_WINDOWS) || defined(_WIN32)
@@ -142,6 +186,8 @@ static void handle_infer(socket_t client_fd, const char *request)
     struct timespec ts = {0, 1000000}; /* 1ms = 1000000 ns */
     nanosleep(&ts, NULL);
 #endif
+
+    t2 = cm_now_ms();
 
     /* iForest 推理 */
     if_score = iforest_score(&g_if_model, features);
@@ -153,10 +199,25 @@ static void handle_infer(socket_t client_fd, const char *request)
     cnn1d_classify(features, 1, IF_N_FEATURES, 1, probs);
     cnn_class = cnn1d_get_class(probs, 7, &cnn_conf);
 
+    t3 = cm_now_ms();
+
     /* 构建应答 */
     build_infer_response(response, sizeof(response),
                          if_score, ae_score, cnn_class, cnn_conf, 1);
-    send(client_fd, response, (int)strlen(response), 0);
+    resp_len = (int)strlen(response);
+    send(client_fd, response, resp_len, 0);
+
+    t4 = cm_now_ms();
+    PQ_LOGI("compute_module_sim: infer done (req=%d B, resp=%d B, "
+            "parse=%llu us, sleep=%llu ms, infer=%llu us, send=%llu us, "
+            "total=%llu ms, if=%.4f, ae=%.2f, cls=%d)",
+            req_len, resp_len,
+            (unsigned long long)(t1 - t0) * 1000,
+            (unsigned long long)(t2 - t1),
+            (unsigned long long)(t3 - t2) * 1000,
+            (unsigned long long)(t4 - t3) * 1000,
+            (unsigned long long)(t4 - t0),
+            if_score, ae_score, cnn_class);
 }
 
 /* ==================== TCP 服务主循环 ==================== */
@@ -183,18 +244,28 @@ static void *server_thread_main(void *arg)
 
         client_fd = accept(listen_fd, (struct sockaddr *)&caddr, &alen);
         if (client_fd == SOCK_INVALID) {
-            if (g_running) PQ_LOGW("compute_module_sim: accept failed");
+            if (g_running) {
+                int e = PQ_SOCK_ERRNO;
+                PQ_LOGW("compute_module_sim: accept failed: %s",
+                        PQ_SOCK_STRERROR(e));
+            }
             continue;
         }
 
-        PQ_LOGI("compute_module_sim: host connected");
+        PQ_LOGI("compute_module_sim: host connected (from %s:%d)",
+                inet_ntoa(caddr.sin_addr), ntohs(caddr.sin_port));
 
         /* 处理该连接的所有请求 */
         while (g_running) {
             n = (int)recv(client_fd, buf, sizeof(buf) - 1, 0);
-            if (n <= 0) break;
+            if (n <= 0) {
+                int e = PQ_SOCK_ERRNO;
+                PQ_LOGI("compute_module_sim: host recv end (ret=%d, %s)",
+                        n, n == 0 ? "peer closed" : PQ_SOCK_STRERROR(e));
+                break;
+            }
             buf[n] = '\0';
-            handle_infer(client_fd, buf);
+            handle_infer(client_fd, buf, n);
         }
 
         SOCK_CLOSE(client_fd);
