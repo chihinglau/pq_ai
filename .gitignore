@@ -38,6 +38,9 @@ t3.c
 /test_*.c
 test_*.exe
 test_*.o
+# 测试可执行文件（Linux 无后缀编译产物，如 test_usb_ecm_ai_rpc）
+# 只匹配 pq_ai_terminal/ 直接子项，不影响 tests/ 目录下的源码
+/pq_ai_terminal/test_*
 
 # ==================== Reports (generated) ====================
 report*.txt
