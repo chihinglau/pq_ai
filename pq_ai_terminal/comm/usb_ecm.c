@@ -9,6 +9,11 @@
  * @date 2026-08-02
  */
 
+/* 启用 POSIX 扩展（clock_gettime 等），需在所有 include 之前定义 */
+#ifndef PLATFORM_WINDOWS
+#define _POSIX_C_SOURCE 200112L
+#endif
+
 #include "usb_ecm.h"
 #include <string.h>
 

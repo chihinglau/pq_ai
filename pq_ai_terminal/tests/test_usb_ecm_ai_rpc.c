@@ -23,9 +23,10 @@
  * @date 2026-08-03
  */
 
-/* 启用 POSIX 扩展（Linux 下 clock_gettime 等） */
+/* 启用 POSIX 扩展（Linux 下 clock_gettime / usleep 等） */
 #ifndef PLATFORM_WINDOWS
 #define _POSIX_C_SOURCE 200112L
+#define _DEFAULT_SOURCE 1
 #endif
 
 #include "pq_common.h"
@@ -77,6 +78,7 @@ static int g_tests_failed = 0;
 #define RUN_TEST(test_func) \
     do { \
         printf("=== RUN  %s\n", #test_func); \
+        fflush(stdout); \
         g_tests_run++; \
         if (test_func() == 0) { \
             g_tests_passed++; \
@@ -85,6 +87,7 @@ static int g_tests_failed = 0;
             g_tests_failed++; \
             printf("=== FAIL %s\n\n", #test_func); \
         } \
+        fflush(stdout); \
     } while (0)
 
 /* 测试专用端口（避免与 config.ini 默认 9090 冲突） */
@@ -393,11 +396,11 @@ static int test_ai_rpc_fallback_mid_run(void)
     }
     TEST_ASSERT_EQ(ai_rpc_module_online(), 1, "was online");
 
-    /* 停止算力模组仿真器 */
+    /* 停止算力模组仿真器（会强制关闭客户端连接） */
     compute_module_sim_stop();
-    PQ_SLEEP_MS(200);
+    PQ_SLEEP_MS(300);
 
-    /* 后续推理应降级为本地 */
+    /* 后续推理应降级为本地（连接被关闭，usb_ecm_request 返回失败） */
     TEST_ASSERT_EQ(ai_rpc_infer(&feat, &metrics, &result), 0, "infer after stop");
     TEST_ASSERT_EQ(result.module_available, 0, "fallback to local");
     TEST_ASSERT_EQ(ai_rpc_module_online(), 0, "now offline");
@@ -431,7 +434,7 @@ static int test_ai_rpc_recovery(void)
     /* 2. 启动算力模组仿真器 */
     TEST_ASSERT_EQ(compute_module_sim_start("127.0.0.1", TEST_PORT_RECOVERY), 0,
                     "sim start");
-    PQ_SLEEP_MS(100);
+    PQ_SLEEP_MS(200);
 
     /* 3. 再次推理，应自动重连并恢复 ONLINE */
     TEST_ASSERT_EQ(ai_rpc_infer(&feat, &metrics, &result), 0, "infer 2");

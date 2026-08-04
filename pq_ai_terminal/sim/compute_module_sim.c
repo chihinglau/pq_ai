@@ -59,6 +59,7 @@
 /* ==================== 模块状态 ==================== */
 static volatile int g_running = 0;
 static socket_t     g_listen_fd = SOCK_INVALID;
+static socket_t     g_client_fd = SOCK_INVALID;  /* 当前客户端连接（stop 时需关闭） */
 static thread_t     g_thread;
 
 /* 本地 AI 模型（算力模组上运行） */
@@ -252,6 +253,9 @@ static void *server_thread_main(void *arg)
             continue;
         }
 
+        /* 记录当前客户端连接（供 stop 时强制关闭） */
+        g_client_fd = client_fd;
+
         PQ_LOGI("compute_module_sim: host connected (from %s:%d)",
                 inet_ntoa(caddr.sin_addr), ntohs(caddr.sin_port));
 
@@ -269,6 +273,7 @@ static void *server_thread_main(void *arg)
         }
 
         SOCK_CLOSE(client_fd);
+        g_client_fd = SOCK_INVALID;
         PQ_LOGI("compute_module_sim: host disconnected");
     }
 
@@ -375,14 +380,26 @@ void compute_module_sim_stop(void)
 
     g_running = 0;
 
+    /* 关闭监听 socket，解除 accept 阻塞 */
     if (g_listen_fd != SOCK_INVALID) {
         SOCK_CLOSE(g_listen_fd);
         g_listen_fd = SOCK_INVALID;
     }
 
+    /* 关闭已建立的客户端连接，解除 recv 阻塞 */
+    if (g_client_fd != SOCK_INVALID) {
+#if defined(PLATFORM_WINDOWS) || defined(_WIN32)
+        shutdown(g_client_fd, SD_BOTH);
+#else
+        shutdown(g_client_fd, SHUT_RDWR);
+#endif
+        SOCK_CLOSE(g_client_fd);
+        g_client_fd = SOCK_INVALID;
+    }
+
     /* 等待线程退出 */
 #if defined(PLATFORM_WINDOWS) || defined(_WIN32)
-    WaitForSingleObject(g_thread, 2000);
+    WaitForSingleObject(g_thread, 3000);
     CloseHandle(g_thread);
 #else
     pthread_join(g_thread, NULL);
