@@ -1208,7 +1208,7 @@ int hal_ht7627s_read_regs(ht7627s_regs_t *regs)
 │    └── T536+HT7627S 终端 (192.168.14.101)        │
 │         用户名: csg                               │
 │         密码:   Iot@csg123                        │
-│         SSH:    ssh csg@192.168.14.101           │
+│         SSH:    ssh -P 8888 csg@192.168.14.101  │
 │         特点:    仅本地通信，无公网                 │
 │                                                   │
 └───────────────────────────────────────────────────┘
@@ -1216,12 +1216,12 @@ int hal_ht7627s_read_regs(ht7627s_regs_t *regs)
 
 #### 12.5.2 网络配置详情
 
-| 设备 | IP 地址 | 子网 | 连接方式 | 公网 |
-|------|---------|------|---------|------|
-| 开发 PC 以太网2 | 192.168.137.x | 255.255.255.0 | 有线 | - |
-| RK3576 算力卡 | 192.168.137.204 | 255.255.255.0 | 以太网2 | ✅ 支持 |
-| 开发 PC 以太网5 | 192.168.14.x | 255.255.255.0 | 有线 | - |
-| T536+HT7627S 终端 | 192.168.14.101 | 255.255.255.0 | 以太网5 | ❌ 不支持 |
+| 设备 | IP 地址 | 子网 | 连接方式 | SSH 端口 | 公网 |
+|------|---------|------|---------|---------|------|
+| 开发 PC 以太网2 | 192.168.137.x | 255.255.255.0 | 有线 | - | - |
+| RK3576 算力卡 | 192.168.137.204 | 255.255.255.0 | 以太网2 | 22 | ✅ 支持 |
+| 开发 PC 以太网5 | 192.168.14.x | 255.255.255.0 | 有线 | - | - |
+| T536+HT7627S 终端 | 192.168.14.101 | 255.255.255.0 | 以太网5 | **8888** | ❌ 不支持 |
 
 #### 12.5.3 SSH 登录信息
 
@@ -1240,8 +1240,8 @@ ps aux | grep compute       # 查看算力服务状态
 
 **T536+HT7627S 终端**：
 ```bash
-# 从 Windows PowerShell 或 WSL 登录
-ssh csg@192.168.14.101
+# 从 Windows PowerShell 或 WSL 登录（SSH 端口 8888）
+ssh -P 8888 csg@192.168.14.101
 # 密码: Iot@csg123
 
 # 典型操作
@@ -1263,7 +1263,7 @@ ping 192.168.14.101     # 验证 T536 可达
 ```bash
 # WSL Ubuntu 26.04
 ssh -o StrictHostKeyChecking=no cat@192.168.137.204   # RK3576
-ssh -o StrictHostKeyChecking=no csg@192.168.14.101    # T536
+ssh -o StrictHostKeyChecking=no -p 8888 csg@192.168.14.101    # T536 (端口 8888)
 ```
 
 **步骤3：配置 config.ini**
@@ -1287,8 +1287,8 @@ export CROSS_COMPILE=aarch64-linux-gnu-
 make clean
 make CC=${CROSS_COMPILE}gcc sim
 
-# 推送到 T536
-scp -P 22 pq_sim csg@192.168.14.101:/home/csg/
+# 推送到 T536（SSH 端口 8888）
+scp -P 8888 pq_sim csg@192.168.14.101:/home/csg/
 
 # 推送到 RK3576
 scp -P 22 compute_module_server cat@192.168.137.204:/home/cat/
@@ -1300,8 +1300,8 @@ scp -P 22 compute_module_server cat@192.168.137.204:/home/cat/
 ssh cat@192.168.137.204
 cd /home/cat && ./compute_module_server &
 
-# SSH 到 T536 启动主程序
-ssh csg@192.168.14.101
+# SSH 到 T536 启动主程序（端口 8888）
+ssh -P 8888 csg@192.168.14.101
 cd /home/csg && ./pq_sim --all --cycles 100
 ```
 
