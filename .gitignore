@@ -24,7 +24,10 @@ matlab_sim/data/
 # ==================== C simulation outputs ====================
 pq_ai_terminal/pq_sim
 pq_ai_terminal/pq_sim.exe
-pq_ai_terminal/*.csv
+pq_ai_terminal/pq_terminal_arm
+pq_ai_terminal/*_arm.o
+pq_terminal_arm
+*.csv
 pq_ai_terminal/sim_main.err
 pq_ai_terminal/sim_main.i
 
