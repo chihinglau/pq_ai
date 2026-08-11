@@ -1,0 +1,20 @@
+[Unit]
+Description=PQ AI Inference Server for RK3576 (T536 USB ECM)
+After=network.target
+
+[Service]
+Type=simple
+User=cat
+Group=cat
+WorkingDirectory=/home/cat/rkllm-server-deploy/scripts
+
+ExecStart=/usr/bin/python3 /home/cat/rkllm-server-deploy/scripts/rk3576_inference_server.py --host 192.168.100.1 --port 9090
+
+Restart=always
+RestartSec=5
+
+StandardOutput=append:/home/cat/rkllm-server-deploy/logs/inference_server.log
+StandardError=append:/home/cat/rkllm-server-deploy/logs/inference_server_error.log
+
+[Install]
+WantedBy=multi-user.target
