@@ -101,7 +101,7 @@ static void print_summary(const pq_metrics_t *m, scenario_type_t scen,
     printf("============================================================\n");
 }
 
-static int run_single_scenario(const char *scenario, int max_cycles)
+static int run_single_scenario(const char *scenario, int max_cycles, const char *config_file)
 {
     int i;
     ht7627s_cfg_t cfg = {0};
@@ -117,7 +117,7 @@ static int run_single_scenario(const char *scenario, int max_cycles)
     char json_buf[1024];
 
     pq_config_t sys_cfg = {0};
-    config_load(&sys_cfg, "config.ini");
+    config_load(&sys_cfg, config_file);
 
     print_header();
     printf("  Simulation Parameters:\n");
@@ -245,20 +245,59 @@ int sim_main(int argc, char *argv[])
     const char *scenario = "S4";
     int max_cycles = 100;
     int run_all = 0;
+    const char *config_file = "config.ini";
     const char *all_scenarios[] = {"S1", "S2", "S3", "S4", "S5"};
+
+    /* 解析命令行 */
+    for (i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--scenario") == 0 && i + 1 < argc) {
+            scenario = argv[++i];
+        } else if (strcmp(argv[i], "--cycles") == 0 && i + 1 < argc) {
+            max_cycles = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
+            config_file = argv[++i];
+        } else if (strcmp(argv[i], "--all") == 0) {
+            run_all = 1;
+        } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+            printf("Usage: %s [options]\n", argv[0]);
+            printf("Options:\n");
+            printf("  --scenario S1|S2|S3|S4|S5  Select simulation scenario (default: S4)\n");
+            printf("  --cycles N                 Number of cycles to simulate (default: 100)\n");
+            printf("  --config FILE              Config file path (default: config.ini)\n");
+            printf("  --all                      Run all S1~S5 scenarios sequentially\n");
+            printf("  -h, --help                 Show this help message\n");
+            printf("\nScenarios:\n");
+            printf("  S1  Baseline load (340kW industrial)\n");
+            printf("  S2  EV charging (80kW, 5/7/11/13 harmonics)\n");
+            printf("  S3  Distributed PV (200kW, voltage rise +2.93%%)\n");
+            printf("  S4  EV+PV coupled (280kW, combined effects)\n");
+            printf("  S5  Extreme scenario (360kW, high THD)\n");
+            return 0;
+        }
+    }
 
     /* 加载配置 */
     pq_config_t sys_cfg = {0};
-    config_load(&sys_cfg, "config.ini");
+    config_load(&sys_cfg, config_file);
 
-    /* 启动 RK3576 算力模组仿真器（仿真模式） */
+    printf("[INIT] Using config: %s\n", config_file);
+
+    /* 启动 RK3576 算力模组仿真器（仿真模式）或连接真实硬件 */
     const char *cm_ip = config_get_string(&sys_cfg, "compute_module.ip", USB_ECM_SIM_IP);
     int cm_port = config_get_int(&sys_cfg, "compute_module.port", USB_ECM_DEFAULT_PORT);
     int cm_enabled = config_get_int(&sys_cfg, "compute_module.enabled", 1);
+    int cm_is_sim = 0;  /* 1=本地仿真器, 0=真实硬件 */
 
     if (cm_enabled) {
-        if (compute_module_sim_start(cm_ip, cm_port) == 0) {
-            printf("[INIT] RK3576 compute module simulator started (%s:%d)\n", cm_ip, cm_port);
+        /* 判断是仿真模式还是真实硬件模式 */
+        if (strcmp(cm_ip, USB_ECM_SIM_IP) == 0) {
+            cm_is_sim = 1;
+            if (compute_module_sim_start(cm_ip, cm_port) == 0) {
+                printf("[INIT] RK3576 compute module SIMULATOR started (%s:%d)\n", cm_ip, cm_port);
+            }
+        } else {
+            cm_is_sim = 0;
+            printf("[INIT] RK3576 compute module REAL HARDWARE at %s:%d\n", cm_ip, cm_port);
         }
         /* 初始化 AI RPC 客户端（主机侧，通过 USB ECM 连接算力模组） */
         ai_rpc_init(cm_ip, cm_port);
@@ -294,16 +333,16 @@ int sim_main(int argc, char *argv[])
 
     if (run_all) {
         for (i = 0; i < 5; i++) {
-            run_single_scenario(all_scenarios[i], max_cycles);
+            run_single_scenario(all_scenarios[i], max_cycles, config_file);
             printf("\n\n");
         }
     } else {
-        run_single_scenario(scenario, max_cycles);
+        run_single_scenario(scenario, max_cycles, config_file);
     }
 
     /* 清理：关闭 AI RPC 和算力模组仿真器 */
     ai_rpc_deinit();
-    if (cm_enabled) {
+    if (cm_enabled && cm_is_sim) {
         compute_module_sim_stop();
     }
 

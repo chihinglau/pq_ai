@@ -73,8 +73,16 @@ clean:
 
 # Cross-compilation for T536 (aarch64)
 CROSS_CC = aarch64-linux-gnu-gcc
-CROSS_CFLAGS = -std=c99 -Wall -Wextra -O2
+CROSS_CFLAGS = -std=c99 -Wall -Wextra -O2 -DPLATFORM_LINUX
+CROSS_OBJS = $(ALL_SRCS:.c=_arm.o)
 
 linux-arm:
-	$(CROSS_CC) $(CROSS_CFLAGS) $(INCLUDES) -c app/main.c -o app/main_arm.o
-	$(CROSS_CC) -o pq_terminal_arm$(EXE_EXT) app/main_arm.o $(LIBS)
+	@echo "Cross-compiling for T536 (aarch64)..."
+	@for src in $(ALL_SRCS); do \
+		obj=$${src%.c}_arm.o; \
+		echo "  CC $$src"; \
+		$(CROSS_CC) $(CROSS_CFLAGS) $(INCLUDES) -c $$src -o $$obj || exit 1; \
+	done
+	$(CROSS_CC) -o pq_terminal_arm $(CROSS_OBJS) -lm -lpthread
+	@echo "Cross-compilation complete: pq_terminal_arm"
+	@file pq_terminal_arm
