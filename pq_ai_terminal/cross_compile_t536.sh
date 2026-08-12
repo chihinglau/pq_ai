@@ -28,34 +28,53 @@ echo ""
 
 cd ${PROJECT_DIR}
 
-# 清理
-make clean 2>/dev/null || true
+# 清理旧的构建
+rm -rf build-linux
 
-# 编译
-make CROSS_CC="${CC}" CROSS_CFLAGS="-std=c99 -Wall -Wextra -O2 -DPLATFORM_LINUX" linux-arm
+# 使用CMake交叉编译
+mkdir -p build-linux
+cd build-linux
 
+cmake .. -DCMAKE_TOOLCHAIN_FILE=../cmake/aarch64-linux-gnu.cmake -DCMAKE_BUILD_TYPE=Release
+if [ $? -ne 0 ]; then
+    echo "错误: CMake配置失败"
+    exit 1
+fi
+
+make -j$(nproc)
 if [ $? -ne 0 ]; then
     echo "错误: 编译失败"
     exit 1
 fi
 
+cd ${PROJECT_DIR}
+
 echo ""
 echo "===== Strip 可执行文件 ====="
-${STRIP} pq_terminal_arm
+${STRIP} build-linux/pq_terminal
+${STRIP} build-linux/pq_acq_wave
 
 echo ""
 echo "===== 验证产物 ====="
-ls -la pq_terminal_arm
-file pq_terminal_arm
+echo "主程序 (pq_terminal):"
+ls -la build-linux/pq_terminal
+file build-linux/pq_terminal
+echo ""
+echo "波形采集程序 (pq_acq_wave):"
+ls -la build-linux/pq_acq_wave
+file build-linux/pq_acq_wave
 
 echo ""
 echo "===== 检查依赖库 ====="
-${CROSS_COMPILE}-readelf -d pq_terminal_arm 2>/dev/null | grep NEEDED || \
-    ${CROSS_COMPILE}-objdump -x pq_terminal_arm 2>/dev/null | grep NEEDED || \
-    ldd pq_terminal_arm 2>/dev/null || echo "  (静态链接或无需额外依赖)"
+echo "pq_terminal:"
+${CROSS_COMPILE}-readelf -d build-linux/pq_terminal 2>/dev/null | grep NEEDED || echo "  (静态链接)"
+echo "pq_acq_wave:"
+${CROSS_COMPILE}-readelf -d build-linux/pq_acq_wave 2>/dev/null | grep NEEDED || echo "  (静态链接)"
 
 echo ""
 echo "===== 编译完成 ====="
-echo "可执行文件: ${PROJECT_DIR}/pq_terminal_arm"
-echo "大小: $(ls -lh pq_terminal_arm | awk '{print $5}')"
-echo "架构: $(file pq_terminal_arm | grep -o 'ARM.*')"
+echo "产物目录: ${PROJECT_DIR}/build-linux/"
+echo ""
+echo "部署到T536:"
+echo "  scp build-linux/pq_acq_wave csg@192.168.14.101:/home/csg/"
+echo "  ssh -p 8888 csg@192.168.14.101 'chmod +x /home/csg/pq_acq_wave && /home/csg/pq_acq_wave --cycles 100'"

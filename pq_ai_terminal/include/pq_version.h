@@ -20,12 +20,12 @@
 
 /* ==================== 当前版本（权威来源） ==================== */
 #define PQ_VERSION_MAJOR    2
-#define PQ_VERSION_MINOR    1
-#define PQ_VERSION_PATCH    1
+#define PQ_VERSION_MINOR    2
+#define PQ_VERSION_PATCH    0
 
-#define PQ_VERSION_STRING   "2.1.1"
-#define PQ_VERSION_DATE     "2026-08-03"
-#define PQ_VERSION_TITLE    "双机协作架构版（诊断增强）"
+#define PQ_VERSION_STRING   "2.2.0"
+#define PQ_VERSION_DATE     "2026-08-13"
+#define PQ_VERSION_TITLE    "T536+RK3576 全链路验证版"
 
 /* ==================== 版本宏便捷接口 ==================== */
 #define PQ_VERSION_NUM      ((PQ_VERSION_MAJOR << 16) | \
@@ -34,6 +34,33 @@
 
 /* ==================== 变更日志（CHANGELOG） ==================== */
 /**
+ * v2.2.0 (2026-08-13) —— T536+RK3576 全链路验证版
+ *   - T536 真实硬件波形采集与 AI 推理全链路打通:
+ *     wave_export_arm.c: 直接使用 HAL 接口采集 T536 实时波形并导出为 CSV
+ *     wave_sender_arm.c: 采集原始波形 → USB ECM 发送 → RK3576 AI 推理 → 接收结果
+ *   - RK3576 AI 推理服务端 (wave_inference_server_v2.py):
+ *     接收原始波形二进制协议 (24字节协议头 + 波形数据)
+ *     波形解析 → 特征提取 (27维) → AI 推理 (iForest/AE/CNN)
+ *     响应包: 48字节 (小端序, <IB3sffifIi16s)
+ *   - 跨编译方法固化到 config.ini:
+ *     使用 arm-linux-gnueabihf-gcc (GCC Linaro 5.3.1) 编译 32位 ARM 程序
+ *     运行方式: /lib32/ld-linux-armhf.so.3 --library-path /lib32:/custom/sys/lib/hal_lib/lib32
+ *   - 部署脚本 deploy_and_test.sh 重写:
+ *     支持交叉编译 → 上传 T536/RK3576 → 启动服务 → 运行测试 → 日志收集
+ *     完整彩色分级日志输出
+ *   - 关键修复:
+ *     AI 响应格式从错误的 56字节 (大端序) 修正为正确的 48字节 (小端序)
+ *     Python 端协议解析从大端序 (!) 改为小端序 (<)
+ *     T536 32位动态链接器配置修复
+ *   - 增强日志系统:
+ *     wave_export_arm.c / wave_sender_arm.c 实现分级日志 (ERROR/WARN/INFO/DEBUG)
+ *     wave_inference_server_v2.py 使用 Python logging 模块实现分级日志
+ *     日志同时输出到控制台和文件
+ *   - 测试验证结果:
+ *     T536 A相加压 (UA RMS≈236V), B/C相开路 (UB/UC RMS≈1.2V)
+ *     AI 推理正确识别单相开路工况: iForest=1.0000, CNN=3 (single phase open)
+ *     业务流程: T536采集→TCP→RK3576解析→AI推理→返回结果 全链路验证通过
+ *
  * v2.1.1 (2026-08-03) —— 双机协作架构版（诊断增强）
  *   - USB ECM 传输层（comm/usb_ecm.c）添加详细诊断日志：
  *     connect/send/recv/request 关键节点记录 errno、字节数、往返耗时

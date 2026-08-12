@@ -2,7 +2,7 @@
 
 > **项目全称**：基于终端交流采样波形数据的电能质量 AI 应用 —— 新能源与充电桩接入影响评估
 > **目标平台**：全志 T536（4×Cortex-A55 + E907 RISC-V） + 钜泉 HT7627S（7 通道 24bit AFE） + 瑞芯微 RK3576（外挂算力模组，USB ECM 互连）
-> **版本**：v2.1.0 ｜ **日期**：2026-08-02
+> **版本**：v2.2.0 ｜ **日期**：2026-08-13
 > **许可证**：内部技术方案验证工程，仅供项目团队使用
 
 ---
@@ -39,15 +39,15 @@ pq_ai/
 │   ├── CMakeLists.txt             #   顶层 CMake 配置
 │   ├── config.ini                 #   运行时配置（限值、采样率、MQTT、AI 阈值）
 │   ├── include/                   #   公共头文件（pq_common / pq_hal / pq_config）
-│   ├── drivers/                   #   HT7627S 寄存器定义
+│   ├── drivers/                   #   HT7627S 寄存器定义 + HAL 接口
 │   ├── core/                      #   核心算法（pq_metrics / event_trigger / wave_freeze / feature_extract / scenario_detect）
 │   ├── ai/                        #   AI 推理 Stub（iforest / ae / cnn1d）
-│   ├── comm/                      #   通信层（proto_mqtt / time_sync）
+│   ├── comm/                      #   通信层（proto_mqtt / time_sync / usb_ecm）
 │   ├── utils/                     #   工具层（ring_buffer / json_builder / sqlite_wrapper / pq_config）
-│   ├── sim/                       #   软模拟层（hal_sim / sim_main）
-│   ├── app/                       #   嵌入式真实入口
+│   ├── sim/                       #   软模拟层（hal_sim / sim_main / rk3576_inference_server.py）
+│   ├── app/                       #   嵌入式真实入口（wave_export_arm.c / wave_sender_arm.c / wave_inference_server_v2.py）
 │   ├── cmake/                     #   aarch64 交叉编译工具链
-│   ├── scripts/                   #   构建/运行脚本
+│   ├── scripts/                   #   构建/运行/部署脚本
 │   ├── docs/                      #   项目开发手册 + Linux 环境技术方案
 │   └── README.md                  #   嵌入式子项目说明
 │
@@ -128,12 +128,16 @@ pq_ai/
 ```
 
 **数据流**：
-1. T536+HT7627S 采样 → PQ 指标计算 → 特征提取（27 维）
-2. 特征向量通过 USB ECM 发送给 RK3576 算力模组
-3. RK3576 运行 iForest/AE/CNN1D 推理，返回结果
-4. T536 接收结果 → 场景识别 → MQTT 上报 + 治理建议
+1. T536+HT7627S 采样 → 波形采集 → 原始波形数据
+2. 原始波形通过 USB ECM 二进制协议发送给 RK3576（24字节协议头 + 7182字节波形数据）
+3. RK3576 解析波形 → 计算 RMS → 提取 27 维特征向量 → 运行 iForest/AE/CNN1D 推理
+4. RK3576 返回 48 字节 AI 推理响应包（iForest得分、AE得分、CNN分类及置信度）
+5. T536 接收结果 → 场景识别 → MQTT 上报 + 治理建议
 
-**降级策略**：算力模组不可达时，主机自动降级为本地 Stub 推理，保证仿真不中断。
+**已验证的真实硬件流程**（v2.2.0）：
+- T536 A相加压（UA RMS≈236V），B/C相开路（UB/UC RMS≈1.2V）
+- 完整业务链路：T536采集→TCP发送→RK3576解析→特征提取→AI推理→返回结果
+- AI推理结果正确：iForest=1.0000（异常），CNN=3（单相开路），置信度0.90
 
 ---
 
@@ -233,8 +237,23 @@ file pq_sim
 ## 已验证的部署结果
 
 **环境**：WSL Ubuntu 26.04 + GCC 15.2.0 + Make 4.4.1 + CMake 4.2.3
+**真实硬件**：T536 + RK3576 + HT7627S
 
-`./pq_sim --all --cycles 100` 运行结果：
+### v2.2.0 真实硬件全链路验证
+
+| 环节 | 状态 | 说明 |
+|------|------|------|
+| T536 HAL 初始化 | ✅ | HAL init → device get 成功 |
+| 波形采集 | ✅ | 7194字节/周期, 5周期成功 |
+| USB ECM 通信 | ✅ | T536(192.168.100.2) ↔ RK3576(192.168.100.1) |
+| 原始波形传输 | ✅ | 24字节协议头 + 7182字节波形, 小端序 |
+| RK3576 波形解析 | ✅ | 7通道 × 256点 × 4字节float 正确解析 |
+| 特征提取 | ✅ | UA=236.705V, UB=1.224V, UC=1.214V |
+| AI 推理 | ✅ | iForest=1.0000, CNN=3(单相开路), 置信度0.90 |
+| 响应接收 | ✅ | 48字节小端序响应包, 魔数验证通过 |
+| 日志系统 | ✅ | 分级日志(ERROR/WARN/INFO/DEBUG) 控制台+文件 |
+
+### v2.1.0 仿真验证
 
 | 场景 | 触发事件数 | 总评 | 治理建议 |
 |------|-----------|------|----------|
@@ -323,7 +342,27 @@ file pq_sim
 
 ## 版本历史
 
-### v2.1.0 (2026-08-02) — 双机协作架构版
+### v2.2.0 (2026-08-13) — T536+RK3576 全链路验证版
+
+- **T536 真实硬件波形采集与 AI 推理全链路打通**
+  - `wave_export_arm.c`：直接使用 HAL 接口采集 T536 实时波形并导出为 CSV
+  - `wave_sender_arm.c`：采集原始波形 → USB ECM 发送 → RK3576 AI 推理 → 接收结果
+- **RK3576 AI 推理服务端** (`wave_inference_server_v2.py`)
+  - 接收原始波形二进制协议（24字节协议头 + 波形数据）
+  - 波形解析 → 特征提取（27维）→ AI 推理（iForest/AE/CNN）
+  - 响应包：48字节（小端序 `<IB3sffifIi16s`）
+- **交叉编译方法固化到 config.ini**
+  - 使用 `arm-linux-gnueabihf-gcc`（GCC Linaro 5.3.1）编译 32 位 ARM 程序
+  - 运行方式：`/lib32/ld-linux-armhf.so.3 --library-path /lib32:/custom/sys/lib/hal_lib/lib32`
+- **部署脚本 deploy_and_test.sh 重写**
+  - 支持交叉编译 → 上传 T536/RK3576 → 启动服务 → 运行测试 → 日志收集
+- **关键修复**
+  - AI 响应格式从错误的 56 字节（大端序）修正为正确的 48 字节（小端序）
+  - Python 端协议解析从大端序 (`!`) 改为小端序 (`<`)
+- **增强日志系统**：C 端分级日志 + Python logging 模块，同时输出到控制台和文件
+- **测试验证**：A相加压、B/C相开路工况，AI 正确识别单相开路（iForest=1.0, CNN=3）
+
+### v2.1.1 (2026-08-03) — 双机协作架构版（诊断增强）
 
 - **架构变更**：T536 不带 NPU，新增 RK3576 算力模组通过 USB ECM 外挂
 - 主机 T536+HT7627S 负责采样 + PQ 指标 + 事件触发 + 特征提取
@@ -360,6 +399,6 @@ file pq_sim
 ## 维护信息
 
 - **维护团队**：嵌入式软件团队 + 算法仿真团队
-- **文档版本**：v2.0.0（2026-08-02）
+- **文档版本**：v2.2.0（2026-08-13）
 - **版本权威源**：[pq_ai_terminal/include/pq_version.h](pq_ai_terminal/include/pq_version.h)
 - **GitHub**：[https://github.com/chihinglau/pq_ai](https://github.com/chihinglau/pq_ai)

@@ -1,6 +1,8 @@
 /**
  * @file ht7627s_regs.h
  * @brief HT7627S寄存器地址定义
+ * 
+ * 注意: ht7627s_wave_t 和 ht7627s_regs_t 结构体定义在 pq_hal.h 中
  */
 
 #ifndef HT7627S_REGS_H
