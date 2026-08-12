@@ -2,7 +2,7 @@
 
 > **项目全称**：基于终端交流采样波形数据的电能质量 AI 应用 —— 新能源与充电桩接入影响评估
 > **目标平台**：全志 T536（4×Cortex-A55 + E907 RISC-V） + 钜泉 HT7627S（7 通道 24bit AFE） + 瑞芯微 RK3576（外挂算力模组，USB ECM 互连）
-> **版本**：v2.2.0 ｜ **日期**：2026-08-13
+> **版本**：v2.2.1 ｜ **日期**：2026-08-12
 > **许可证**：内部技术方案验证工程，仅供项目团队使用
 
 ---
@@ -342,6 +342,14 @@ file pq_sim
 
 ## 版本历史
 
+### v2.2.1 (2026-08-12) — 密码修正与运维文档增强
+
+- **更正 T536 SSH 密码**：从旧密码修正为 `Iot@csg123`
+  - 涉及文件：`config.ini`、`项目开发手册`、`deploy_and_test.sh`、`generate_tech_report.py`
+- **新增 Q16 FAQ**：T536 SSH 账户被锁定（`pam_tally2` 解锁方法）
+- **排查并修复**：T536 `csg` 账户因 21 次失败登录被 PAM 锁定
+- **生成对外技术方案报告 Word 版**：`PQ_AI_Terminal_技术方案报告_v2.2.0.docx`
+
 ### v2.2.0 (2026-08-13) — T536+RK3576 全链路验证版
 
 - **T536 真实硬件波形采集与 AI 推理全链路打通**
@@ -399,6 +407,6 @@ file pq_sim
 ## 维护信息
 
 - **维护团队**：嵌入式软件团队 + 算法仿真团队
-- **文档版本**：v2.2.0（2026-08-13）
+- **文档版本**：v2.2.1（2026-08-12）
 - **版本权威源**：[pq_ai_terminal/include/pq_version.h](pq_ai_terminal/include/pq_version.h)
 - **GitHub**：[https://github.com/chihinglau/pq_ai](https://github.com/chihinglau/pq_ai)

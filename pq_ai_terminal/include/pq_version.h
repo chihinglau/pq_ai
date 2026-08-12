@@ -21,11 +21,11 @@
 /* ==================== 当前版本（权威来源） ==================== */
 #define PQ_VERSION_MAJOR    2
 #define PQ_VERSION_MINOR    2
-#define PQ_VERSION_PATCH    0
+#define PQ_VERSION_PATCH    1
 
-#define PQ_VERSION_STRING   "2.2.0"
-#define PQ_VERSION_DATE     "2026-08-13"
-#define PQ_VERSION_TITLE    "T536+RK3576 全链路验证版"
+#define PQ_VERSION_STRING   "2.2.1"
+#define PQ_VERSION_DATE     "2026-08-12"
+#define PQ_VERSION_TITLE    "T536+RK3576 全链路验证版（密码修正）"
 
 /* ==================== 版本宏便捷接口 ==================== */
 #define PQ_VERSION_NUM      ((PQ_VERSION_MAJOR << 16) | \
@@ -34,6 +34,13 @@
 
 /* ==================== 变更日志（CHANGELOG） ==================== */
 /**
+ * v2.2.1 (2026-08-12) —— 密码修正与运维文档增强
+ *   - 更正 T536 SSH 密码: 从旧密码修正为 Iot@csg123
+ *     涉及文件: config.ini, 项目开发手册, deploy_and_test.sh, generate_tech_report.py
+ *   - 新增 Q16 FAQ: T536 SSH 账户被锁定（pam_tally2 解锁方法）
+ *   - 发现并排查 T536 csg 账户 21 次失败登录导致的 PAM 锁定问题
+ *   - 生成对外技术方案报告 Word 版 (PQ_AI_Terminal_技术方案报告_v2.2.0.docx)
+ *
  * v2.2.0 (2026-08-13) —— T536+RK3576 全链路验证版
  *   - T536 真实硬件波形采集与 AI 推理全链路打通:
  *     wave_export_arm.c: 直接使用 HAL 接口采集 T536 实时波形并导出为 CSV
