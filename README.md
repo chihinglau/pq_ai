@@ -2,7 +2,7 @@
 
 > **项目全称**：基于终端交流采样波形数据的电能质量 AI 应用 —— 新能源与充电桩接入影响评估
 > **目标平台**：全志 T536（4×Cortex-A55 + E907 RISC-V） + 钜泉 HT7627S（7 通道 24bit AFE） + 瑞芯微 RK3576（外挂算力模组，USB ECM 互连）
-> **版本**：v2.2.1 ｜ **日期**：2026-08-12
+> **版本**：v2.3.0 ｜ **日期**：2026-08-13
 > **许可证**：内部技术方案验证工程，仅供项目团队使用
 
 ---
@@ -267,6 +267,193 @@ file pq_sim
 
 ---
 
+## AI 推理模式说明
+
+### 推理模式对比
+
+系统支持两种 AI 推理模式，可根据实际需求选择：
+
+| 特性 | Heuristic 模式（推荐） | NPU 模式（实验性） |
+|------|----------------------|-------------------|
+| **工作原理** | 基于物理规则的确定性计算 | RKNN 神经网络推理 |
+| **输入** | 27 维特征向量 | 特征向量 + 原始波形 |
+| **响应速度** | < 0.01 ms | ~0.5 ms (NPU) / ~6 ms (CPU) |
+| **稳定性** | ✅ 稳定可预测 | ⚠️ 依赖模型训练 |
+| **适用阶段** | 当前生产使用 | 模型训练完成后 |
+| **异常检测** | 电压变异系数 (CV) | iForest 模型 |
+| **事件分类** | 阈值判定规则 | CNN1D 模型 |
+
+### 切换方式
+
+```bash
+# 命令行参数
+python integrated_inference_service.py --inference-mode heuristic  # 默认，稳定可靠
+python integrated_inference_service.py --inference-mode npu        # 实验性，需模型训练
+
+# 或修改 config.ini
+[ai]
+inference_mode = heuristic  # 改为 npu 启用 NPU 模式
+```
+
+### Heuristic 模式计算逻辑
+
+Heuristic 模式基于物理启发式规则进行确定性计算：
+
+1. **if_score（异常检测分数）**
+   - 计算三相电压 RMS 的变异系数 (CV)
+   - `if_score = max_voltage_deviation / max_voltage`
+   - 范围：[0, 1]，0=正常，1=严重异常
+
+2. **ae_score（重构误差）**
+   - 基于 if_score 的确定性映射
+   - `ae_score = f(if_score)`
+   - 范围：[0, 1]
+
+3. **cnn_class（事件分类）**
+   - 根据 if_score 和三相不平衡度进行阈值判定
+   - 0=正常, 1=暂降, 2=暂升, 3=谐波, 4=不平衡, 5=过载, 6=瞬态
+
+---
+
+## 手动测试指南
+
+### RK3576 上手动测试
+
+```bash
+# Step 1: SSH 连接 RK3576
+ssh cat@192.168.100.1          # USB ECM
+# 或
+ssh cat@192.168.137.204       # 有线
+
+# Step 2: 进入项目目录
+cd /home/cat/pq_ai_v3
+
+# Step 3a: 单次推理测试 (Heuristic 模式)
+python3 app/integrated_inference_service.py --inference-mode heuristic --once
+
+# Step 3b: 单次推理测试 (NPU 模式, 实验性)
+python3 app/integrated_inference_service.py --inference-mode npu --once
+
+# Step 4: 批量测试 (100 次循环)
+python3 app/integrated_inference_service.py --inference-mode heuristic --mode test --cycles 100
+
+# Step 5: 启动 AI 服务 (等待 T536 连接)
+# 使用管理脚本 (推荐)
+./scripts/rk3576_ai_service.sh start
+
+# 或手动启动
+python3 -u app/integrated_inference_service.py \
+    --device rk3576 \
+    --inference-mode heuristic \
+    --host 192.168.100.1 \
+    --port 9090
+
+# Step 6: 查看服务状态和日志
+./scripts/rk3576_ai_service.sh status   # 查看状态
+./scripts/rk3576_ai_service.sh logs     # 查看最近日志
+tail -f logs/ai_server_*.log            # 实时查看
+
+# Step 7: 停止服务
+./scripts/rk3576_ai_service.sh stop
+```
+
+### T536 上手动测试
+
+```bash
+# Step 1: SSH 连接 T536
+ssh -p 8888 csg@192.168.14.101
+# 或
+ssh -p 8888 csg@192.168.100.2
+
+# Step 2: 检查程序和依赖
+cd /home/csg/wave_sender_test
+ls -la wave_sender_arm                   # 检查程序
+ls -la /lib32/ld-linux-armhf.so.3        # 检查动态链接器
+ping -c 3 192.168.100.1                  # 测试网络
+
+# Step 3: 单次波形发送测试
+# 使用管理脚本 (推荐)
+CYCLES=1 ./scripts/t536_wave_service.sh start
+
+# 或手动运行 (10 次循环)
+/lib32/ld-linux-armhf.so.3 \
+    --library-path /lib32:/custom/sys/lib/hal_lib/lib32 \
+    ./wave_sender_arm \
+    --server 192.168.100.1 \
+    --port 9090 \
+    --cycles 10 \
+    --interval 200
+
+# Step 4: 持续运行模式
+./scripts/t536_wave_service.sh start
+
+# 或手动运行 (持续运行, 5Hz)
+/lib32/ld-linux-armhf.so.3 \
+    --library-path /lib32:/custom/sys/lib/hal_lib/lib32 \
+    ./wave_sender_arm \
+    --server 192.168.100.1 \
+    --port 9090 \
+    --interval 200
+
+# Step 5: 查看日志
+./scripts/t536_wave_service.sh status    # 状态
+./scripts/t536_wave_service.sh logs      # 日志
+tail -f wave_sender_*.log                # 实时日志
+
+# Step 6: 停止服务
+./scripts/t536_wave_service.sh stop
+```
+
+### 完整联调测试流程
+
+```
+时序要求: 先启动 RK3576，再启动 T536
+```
+
+```bash
+# Step 1: RK3576 启动 AI 服务
+ssh cat@192.168.100.1
+cd /home/cat/pq_ai_v3
+./scripts/rk3576_ai_service.sh start
+# 预期: [运行中] [监听中] 192.168.100.1:9090
+
+# Step 2: T536 启动波形发送 (另一个终端)
+ssh -p 8888 csg@192.168.14.101
+cd /home/csg/wave_sender_test
+./scripts/t536_wave_service.sh start
+# 预期: [运行中] 连接 RK3576 成功
+
+# Step 3: RK3576 查看接收日志
+./scripts/rk3576_ai_service.sh logs
+# 预期: 客户端连接 → 接收波形 → 特征提取 → 推理 → 响应
+
+# Step 4: 停止服务 (先 T536 后 RK3576)
+# T536 端
+./scripts/t536_wave_service.sh stop
+# RK3576 端
+./scripts/rk3576_ai_service.sh stop
+```
+
+### 快捷命令汇总
+
+```bash
+# RK3576 快捷启动
+ssh cat@192.168.100.1 'cd /home/cat/pq_ai_v3 && ./scripts/rk3576_ai_service.sh start'
+
+# T536 快捷启动
+ssh -p 8888 csg@192.168.14.101 'cd /home/csg/wave_sender_test && ./scripts/t536_wave_service.sh start'
+
+# RK3576 查看状态/日志
+ssh cat@192.168.100.1 'cd /home/cat/pq_ai_v3 && ./scripts/rk3576_ai_service.sh status'
+ssh cat@192.168.100.1 'cd /home/cat/pq_ai_v3 && ./scripts/rk3576_ai_service.sh logs 20'
+
+# 一键停止所有服务
+ssh -p 8888 csg@192.168.14.101 'cd /home/csg/wave_sender_test && ./scripts/t536_wave_service.sh stop'
+ssh cat@192.168.100.1 'cd /home/cat/pq_ai_v3 && ./scripts/rk3576_ai_service.sh stop'
+```
+
+---
+
 ## 国标限值速查
 
 | 指标 | 国标 | 限值 |
@@ -310,6 +497,218 @@ file pq_sim
 
 ---
 
+## 技术实现说明
+
+### T536 (ARM32) ↔ RK3576 (ARM64) 字节序处理
+
+#### 背景
+
+T536 是 ARM 32 位架构，RK3576 是 ARM 64 位架构，两者通过 USB ECM 虚拟网卡进行 TCP 通信。正确处理字节序和数据类型是确保跨平台数据传输正确性的关键。
+
+#### 核心原则
+
+1. **统一使用 Little-Endian**：T536 (ARM32) 和 RK3576 (ARM64) 都是 Little-Endian 架构
+2. **使用 `<stdint.h>` 标准类型**：`uint32_t`, `uint64_t` 确保类型大小一致
+3. **手动解析而非直接 memcpy**：避免结构体在不同架构上的对齐差异
+4. **CRC32 基于原始字节计算**：不依赖结构体内存布局
+
+#### AI 响应结构 (35 字节)
+
+```c
+// C 端定义 (使用 __attribute__((packed))
+typedef struct __attribute__((packed)) {
+    uint32_t magic;         // offset 0,  size 4
+    uint8_t  resp_type;     // offset 4,  size 1
+    uint64_t timestamp;     // offset 5,  size 8  ← 关键点: 64位时间戳
+    uint32_t cycle_seq;     // offset 13, size 4
+    float    if_score;      // offset 17, size 4
+    float    ae_score;      // offset 21, size 4
+    float    cnn_confidence;// offset 25, size 4
+    uint8_t  cnn_class;     // offset 29, size 1
+    uint8_t  scene_id;      // offset 30, size 1
+    uint32_t crc32;         // offset 31, size 4
+} ai_response_v2_t;
+```
+
+#### Python 端打包 (RK3576)
+
+```python
+# 使用 struct.pack 明确指定小端格式
+resp_data = b''.join([
+    struct.pack('<I', magic),           # uint32_t → 4 bytes
+    struct.pack('<B', resp_type),       # uint8_t  → 1 byte
+    struct.pack('<Q', timestamp),       # uint64_t → 8 bytes  ← 64位整数
+    struct.pack('<I', cycle_seq),       # uint32_t → 4 bytes
+    struct.pack('<f', if_score),        # float    → 4 bytes
+    struct.pack('<f', ae_score),        # float    → 4 bytes
+    struct.pack('<f', cnn_confidence),  # float    → 4 bytes
+    struct.pack('<B', cnn_class),       # uint8_t  → 1 byte
+    struct.pack('<B', scene_id),        # uint8_t  → 1 byte
+])
+# CRC32 基于前 31 字节计算
+crc32_val = zlib.crc32(resp_data) & 0xFFFFFFFF
+resp_data += struct.pack('<I', crc32_val)
+```
+
+#### C 端解析 (T536)
+
+```c
+// 添加 64 位小端读取函数
+static uint64_t read_le64(const uint8_t *p) {
+    return ((uint64_t)p[0]) |
+           ((uint64_t)p[1] << 8) |
+           ((uint64_t)p[2] << 16) |
+           ((uint64_t)p[3] << 24) |
+           ((uint64_t)p[4] << 32) |
+           ((uint64_t)p[5] << 40) |
+           ((uint64_t)p[6] << 48) |
+           ((uint64_t)p[7] << 56);
+}
+
+// 逐字段解析 (避免直接 memcpy)
+void parse_ai_response(const uint8_t *payload_ptr, ai_response_v2_t *result) {
+    uint8_t *p = payload_ptr;
+    result->magic = read_le32(p); p += 4;
+    result->resp_type = *p++;
+    result->timestamp = read_le64(p); p += 8;  // 64位时间戳
+    result->cycle_seq = read_le32(p); p += 4;
+    memcpy(&result->if_score, p, 4); p += 4;   // float 可直接 memcpy
+    memcpy(&result->ae_score, p, 4); p += 4;
+    memcpy(&result->cnn_confidence, p, 4); p += 4;
+    result->cnn_class = *p++;
+    result->scene_id = *p++;
+    result->crc32 = read_le32(p); p += 4;
+}
+```
+
+#### CRC32 实现
+
+```c
+// 与 zlib.crc32 兼容, 使用多项式 0xEDB88320
+static uint32_t crc32_calc(const uint8_t *data, int len) {
+    uint32_t crc = 0xFFFFFFFF;
+    for (int i = 0; i < len; i++) {
+        crc = (crc >> 8) ^ crc32_table[(crc ^ data[i]) & 0xFF];
+    }
+    return crc ^ 0xFFFFFFFF;
+}
+```
+
+#### 验证结果
+
+| 测试项 | 结果 |
+|--------|------|
+| Python 打包大小 | 35 字节 ✓ |
+| C 端解析 | 所有 10 个字段正确 ✓ |
+| CRC32 校验 | 发送端和接收端一致 ✓ |
+| 5 轮循环 | 100% 成功率 ✓ |
+
+---
+
+### 服务端重连机制
+
+#### 问题描述
+
+原来的服务端实现中，客户端断开连接后无法重新建立连接。原因是 `accept()` 接受连接后，监听 socket 被客户端 socket 覆盖，导致后续无法继续监听新的客户端连接。
+
+#### 修复方案
+
+**1. 保存监听 socket**
+
+```python
+class ReliableTransport:
+    def __init__(self, ...):
+        self._sock = None        # 当前连接的客户端 socket
+        self._listen_sock = None # 保存监听 socket (新增)
+```
+
+**2. 服务端 accept 流程**
+
+```python
+def connect(self):
+    if self.is_server:
+        # 创建并保存监听 socket
+        self._listen_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._listen_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._listen_sock.bind((self.host, self.port))
+        self._listen_sock.listen(128)
+        
+        # accept 返回客户端 socket, 不覆盖 _listen_sock
+        self._sock, client_addr = self._listen_sock.accept()
+```
+
+**3. 添加 reaccept() 方法**
+
+```python
+def reaccept(self) -> bool:
+    """客户端断开后, 重新接受新的客户端连接"""
+    if not self.is_server or not self._listen_sock:
+        return False
+    
+    # 复用保存的监听 socket
+    while self._running:
+        try:
+            self._sock, client_addr = self._listen_sock.accept()
+            log.info(f"客户端重连: {client_addr}")
+            break
+        except socket.timeout:
+            continue
+    
+    self._connected = True
+    self._start_background_threads()
+    return True
+```
+
+**4. 修改 accept_loop**
+
+```python
+def _accept_loop(self):
+    while self._server_running:
+        # 首次连接使用 connect(), 后续使用 reaccept()
+        if not self._transport._connected and self._transport._listen_sock:
+            if not self._transport.reaccept():
+                continue
+        elif not self._transport._connected:
+            if not self._transport.connect():
+                continue
+        
+        # 等待客户端断开
+        while self._transport.is_connected and self._server_running:
+            time.sleep(0.5)
+        
+        # 客户端断开, 准备重新监听
+        self._transport.disconnect()
+```
+
+#### 验证结果
+
+```
+# RK3576 AI 服务日志
+18:50:18 [I] 客户端连接: ('192.168.100.2', 39640)    # 第 1 次连接
+18:50:19 [I] 客户端重连: ('192.168.100.2', 39654)    # 第 2 次连接
+18:50:21 [I] 客户端重连: ('192.168.100.2', 39656)    # 第 3 次连接
+18:50:22 [I] 客户端重连: ('192.168.100.2', 39664)    # 第 4 次连接
+18:50:24 [I] 客户端重连: ('192.168.100.2', 39668)    # 第 5 次连接
+```
+
+| 测试项 | 结果 |
+|--------|------|
+| 5 轮循环 | 全部成功 ✓ |
+| 重连机制 | 正常工作 ✓ |
+| 数据传输 | 100% 成功率 ✓ |
+
+---
+
+### 修复文件清单
+
+| 文件 | 修改内容 |
+|------|----------|
+| `pq_ai_terminal/app/wave_sender_arm_test.c` | 添加 `read_le64()` 函数，修改 AI 响应解析为逐字段方式 |
+| `pq_ai_terminal/app/wave_sender_arm.c` | 添加 `read_le64()` 函数，修正 CRC32 实现，修改 AI 响应解析 |
+| `pq_ai_terminal/comm/protocol_v2.py` | 添加 `_listen_sock` 保存监听 socket，添加 `reaccept()` 方法，修改 `_accept_loop()` |
+
+---
+
 ## 文档
 
 - [项目开发手册（完整复现版）](pq_ai_terminal/docs/项目开发手册（完整复现版）.md) — 新 PC 环境复现、新人培训、维护指南
@@ -341,6 +740,35 @@ file pq_sim
 ---
 
 ## 版本历史
+
+### v2.3.0 (2026-08-13) — 字节序、重连机制与推理模式修复版
+
+- **AI 推理模式重构**：
+  - 新增 `InferenceMode` 枚举，支持 `heuristic`（物理启发式）和 `npu`（RKNN 神经网络）两种模式
+  - Heuristic 模式：基于物理规则的确定性计算，使用电压变异系数检测异常，稳定可靠
+  - NPU 模式：RKNN 神经网络推理，需模型训练完成后使用
+  - 添加 `--inference-mode` 命令行参数，支持运行时切换
+  - 添加 `_validate_npu_outputs()` 方法验证 NPU 输出有效性（NaN/Inf/全零检测）
+  - NPU 模式自动回退机制：检测到无效结果时自动切换到 heuristic 模式
+  - 更新 `config.ini` 添加 `inference_mode` 配置项
+
+- **字节序处理**：
+  - T536 (ARM32) 和 RK3576 (ARM64) 数据传输字节序统一为 Little-Endian
+  - 添加 `read_le64()` 函数处理 64 位小端整数时间戳
+  - 使用 `<stdint.h>` 标准类型（uint32_t、uint64_t）确保类型大小一致
+  - AI 响应结构解析从直接 memcpy 改为逐字段解析，避免结构体对齐差异
+  - CRC32 实现统一为多项式 0xEDB88320，右移操作，与 Python `zlib.crc32` 兼容
+  - 帧格式从 `[header][payload][crc]` 改为 `[header][crc][payload]`，与服务端解析一致
+
+- **服务端重连机制**：
+  - 添加 `_listen_sock` 保存监听 socket，避免被客户端 socket 覆盖
+  - 添加 `reaccept()` 方法，支持客户端断开后重新接受连接
+  - 修改 `_accept_loop()`，首次连接使用 connect()，后续使用 reaccept()
+  - 5 轮循环测试验证，重连机制正常工作，数据传输成功率 100%
+
+- **文档更新**：
+  - README.md 添加"技术实现说明"章节，详细描述字节序处理和重连机制
+  - 添加修复文件清单表格
 
 ### v2.2.1 (2026-08-12) — 密码修正与运维文档增强
 
@@ -407,6 +835,6 @@ file pq_sim
 ## 维护信息
 
 - **维护团队**：嵌入式软件团队 + 算法仿真团队
-- **文档版本**：v2.2.1（2026-08-12）
+- **文档版本**：v2.3.0（2026-08-13）
 - **版本权威源**：[pq_ai_terminal/include/pq_version.h](pq_ai_terminal/include/pq_version.h)
 - **GitHub**：[https://github.com/chihinglau/pq_ai](https://github.com/chihinglau/pq_ai)
