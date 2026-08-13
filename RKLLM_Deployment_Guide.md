@@ -1260,6 +1260,220 @@ def chat_completions():
 
 ---
 
+---
+
+## 13. PQ AI Terminal V3 部署与集成
+
+### 13.1 V3 架构概述
+
+PQ AI Terminal V3 是基于 RK3576 的实时电能质量 AI 推理系统，与 RKLLM 大模型服务协同工作：
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        RK3576 算力卡 (192.168.137.204)           │
+│                                                                 │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │              Flask LLM Server (Port: 8080)              │   │
+│  │  ┌─────────┐ ┌─────────┐ ┌───────────┐                 │   │
+│  │  │ /health │ │/v1/model│ │/v1/chat/  │                 │   │
+│  │  │         │ │  s      │ │completions│                 │   │
+│  │  └─────────┘ └─────────┘ └───────────┘                 │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│                            │ HTTP API                           │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │           PQ AI Inference Server V3 (Port: 9090)        │   │
+│  │                                                          │   │
+│  │  ┌────────────┐  ┌────────────┐  ┌──────────────────┐   │   │
+│  │  │ NPU 引擎    │  │ LLM 助手    │  │   波形处理流水线   │   │   │
+│  │  │ (CPU回退)   │  │ (辅助决策)  │  │  多线程并行处理   │   │   │
+│  │  └────────────┘  └────────────┘  └──────────────────┘   │   │
+│  │                                                          │   │
+│  │  ┌──────────────────────────────────────────────────┐   │   │
+│  │  │           分层数据存储 (TieredStorage)           │   │   │
+│  │  │  内存环形缓冲 → EMMC 持久化 → 生命周期管理      │   │   │
+│  │  └──────────────────────────────────────────────────┘   │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│                            │ TCP Protocol V2                    │
+│                   USB ECM 虚拟网卡 (192.168.100.1)             │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+                   T536 数据采集终端 (192.168.100.2)
+```
+
+### 13.2 关键架构决策
+
+| 决策项 | 方案 | 原因 |
+|--------|------|------|
+| 模型转换 | **PC 端执行** | 使用交叉编译服务器 RKNN Toolkit2 环境 |
+| RKNN 模型 | CPU 回退模式 | RK3576 暂未安装 RKNN Runtime |
+| LLM 服务 | 本地 RKLLM 部署 | qwen3-1.7b-rk3576.rkllm 已预装 |
+| V3 实现 | Python 原生 | 与 RKLLM HTTP API 集成更便捷 |
+
+### 13.3 V3 部署步骤
+
+#### 13.3.1 前置条件
+
+```
+RK3576 板端:
+  ✅ Ubuntu 22.04 LTS (ARM64)
+  ✅ Python 3.10 + numpy
+  ✅ RKLLM 服务运行中 (端口 8080)
+  ✅ RKLLM 模型: qwen3-1.7b-rk3576.rkllm
+  ✅ USB ECM 虚拟网卡: 192.168.100.1
+
+PC 端 (交叉编译服务器):
+  ✅ RKNN Toolkit2 已安装
+  ✅ 项目代码就绪
+```
+
+#### 13.3.2 代码部署
+
+```bash
+# PC 端执行
+cd pq_ai_terminal
+
+# 上传 V3 代码到 RK3576
+scp -r app/ ai/ comm/ utils/ cat@192.168.137.204:/home/cat/pq_ai_v3/
+scp config.ini cat@192.168.137.204:/home/cat/pq_ai_v3/
+scp -r scripts/ cat@192.168.137.204:/home/cat/pq_ai_v3/
+
+# 在 RK3576 上创建必要目录
+ssh cat@192.168.137.204 "mkdir -p /home/cat/pq_ai_v3/{logs,models,data}"
+```
+
+#### 13.3.3 启动 V3 服务
+
+```bash
+# SSH 登录 RK3576
+ssh cat@192.168.137.204
+
+# 启动命令 (固化)
+cd /home/cat/pq_ai_v3
+export PQ_LLM_API_URL=http://127.0.0.1:8080/v1/chat/completions
+export PQ_LLM_MODEL=qwen3-1.7b-rk3576.rkllm
+export PQ_MODEL_DIR=/home/cat/pq_ai_v3/models
+export PYTHONUNBUFFERED=1
+
+# 后台启动
+nohup python3 -u app/wave_inference_server_v3.py     --host 192.168.100.1 --port 9090     --log-level INFO > /home/cat/pq_ai_v3/logs/ai_server.log 2>&1 &
+
+# 保存 PID
+echo $! > /home/cat/pq_ai_v3/logs/ai_server.pid
+```
+
+#### 13.3.4 服务验证
+
+```bash
+# 1. 检查 RKLLM 服务
+curl http://127.0.0.1:8080/health
+# 预期: {"status":"ready","model":"qwen3-1.7b-rk3576.rkllm",...}
+
+# 2. 查看 V3 启动日志
+tail -50 /home/cat/pq_ai_v3/logs/ai_server.log
+# 预期输出:
+# [INFO] NPUEngine 初始化完成, 后端: cpu
+# [INFO] LLM 客户端初始化: model=qwen3-1.7b-rk3576.rkllm, 可用=True
+# [INFO] 波形处理流水线已启动: 6 工作线程
+# [INFO] 协议服务端启动: 192.168.100.1:9090
+
+# 3. 端到端测试
+python3 /tmp/test_v3_e2e_v3.py
+```
+
+### 13.4 V3 端到端测试结果 (2026-08-13)
+
+| 测试项 | 结果 | 详情 |
+|--------|------|------|
+| NPU 引擎 CPU 回退推理 | ✅ | CNN1D/AE/IFORREST 全部通过 |
+| LLM 辅助决策 | ✅ | 对接 RKLLM 成功，模拟回退正常 |
+| 波形处理流水线 | ✅ | 提交+处理成功，total_packets=1 |
+| 分层存储 | ✅ | 存储+状态检查通过 |
+| RKLLM 服务连通性 | ✅ | status=ready, model=qwen3-1.7b-rk3576.rkllm |
+| V3 服务启动 | ✅ | 6 工作线程运行中 |
+
+### 13.5 V3 代码目录结构
+
+```
+/home/cat/pq_ai_v3/
+├── app/
+│   ├── wave_inference_server_v3.py  # V3 主编排器
+│   └── wave_pipeline.py             # 波形处理流水线
+├── ai/
+│   ├── npu_engine.py                # NPU 引擎 (CPU 回退模式)
+│   └── llm_advisor.py               # LLM 辅助决策
+├── comm/
+│   └── protocol_v2.py              # Protocol V2 通信协议
+├── utils/
+│   └── storage_manager.py           # 分层数据存储
+├── models/                          # RKNN 模型目录 (待部署)
+├── logs/                            # 日志目录
+│   ├── ai_server.log               # V3 服务日志
+│   └── ai_server.pid               # 服务 PID
+├── data/                            # 数据存储目录
+├── scripts/                         # 运维脚本
+└── config.ini                       # 配置文件
+```
+
+### 13.6 常用运维命令
+
+```bash
+# 查看 V3 服务状态
+cat /home/cat/pq_ai_v3/logs/ai_server.pid
+ps aux | grep wave_inference_server_v3
+
+# 查看实时日志
+tail -f /home/cat/pq_ai_v3/logs/ai_server.log
+
+# 停止 V3 服务
+kill $(cat /home/cat/pq_ai_v3/logs/ai_server.pid)
+
+# 重启 V3 服务
+kill $(cat /home/cat/pq_ai_v3/logs/ai_server.pid)
+sleep 2
+cd /home/cat/pq_ai_v3 && export PQ_LLM_API_URL=http://127.0.0.1:8080/v1/chat/completions && export PQ_LLM_MODEL=qwen3-1.7b-rk3576.rkllm && export PQ_MODEL_DIR=/home/cat/pq_ai_v3/models && nohup python3 -u app/wave_inference_server_v3.py --host 192.168.100.1 --port 9090 --log-level INFO > /home/cat/pq_ai_v3/logs/ai_server.log 2>&1 & echo $! > /home/cat/pq_ai_v3/logs/ai_server.pid
+
+# 重新运行端到端测试
+python3 /tmp/test_v3_e2e_v3.py
+```
+
+### 13.7 已知限制与后续工作
+
+| 项目 | 状态 | 说明 |
+|------|------|------|
+| RKNN Runtime | ❌ 未安装 | 当前使用 CPU 回退模式 |
+| RKNN 模型 | ❌ 未部署 | 需在 PC 端转换后上传 |
+| LLM 响应延迟 | ⚠️ ~10s | 首次调用模型加载，后续优化中 |
+| 压力测试 | ⚠️ 待执行 | 需进行 24h 连续运行测试 |
+| NPU 温度监控 | ⚠️ 待执行 | 长时间运行稳定性验证 |
+
+### 13.8 V3 配置参考
+
+配置文件位置: `config.ini` → `[rk3576_deploy]`
+
+```ini
+[rk3576_deploy]
+host = 192.168.137.204
+user = cat
+password = 123456
+usb_ip = 192.168.100.1
+ai_service_port = 9090
+llm_service_port = 8080
+remote_base = /home/cat/pq_ai_v3
+remote_code_dir = /home/cat/pq_ai_v3
+remote_model_dir = /home/cat/pq_ai_v3/models
+rkllm_model_file = /home/cat/ai/models/qwen3-1.7b-rk3576.rkllm
+llama_cli_path = /home/cat/ai/rk-llama.cpp-rknpu2/build_rk3576/bin/llama-cli
+llm_api_url = http://127.0.0.1:8080/v1/chat/completions
+llm_model_name = qwen3-1.7b-rk3576.rkllm
+v3_host = 192.168.100.1
+v3_port = 9090
+v3_enable_npu = true
+v3_enable_llm = true
+v3_enable_storage = true
+```
+
+
 ## 版本信息
 
 - **文档版本**: 2.1

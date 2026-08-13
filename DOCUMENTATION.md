@@ -1,6 +1,6 @@
 # PQ AI Terminal — 开发部署文档
 
-> **版本**：v2.3.0 ｜ **日期**：2026-08-13 ｜ **状态**：已验证
+> **版本**：v2.3.1 ｜ **日期**：2026-08-13 ｜ **状态**：已验证
 > **版本权威源**：`pq_ai_terminal/include/pq_version.h`
 > **GitHub**：[https://github.com/chihinglau/pq_ai](https://github.com/chihinglau/pq_ai)
 
@@ -153,6 +153,76 @@ make sim
 ---
 
 ## 6. 关键功能实现记录
+
+### v2.3.1 (2026-08-13) — RKLLM 集成与异常检测优化版
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| RKLLM 大模型部署 | ✅ 完成 | qwen3-1.7b-rk3576 模型部署，端口 8080 |
+| RKLLM 服务管理 | ✅ 完成 | rk3576_ai_service.sh 集成 RKLLM 启停、状态、日志管理 |
+| LLM 异常分析集成 | ✅ 完成 | AI 推理异常时自动调用 RKLLM 进行根因分析 |
+| 异常检测逻辑优化 | ✅ 完成 | Heuristic 模式多指标综合检测（CV+电压偏差+不平衡度） |
+| 异常判定阈值调整 | ✅ 完成 | IF > 0.4 或 CNN 异常 或 AE > 100 触发异常 |
+| RKLLM 连通性测试 | ✅ 完成 | test_rkllm_connectivity.py 验证脚本 |
+| 真实硬件 LLM 验证 | ✅ 验证 | T536→RK3576→LLM 全链路验证通过 |
+| 文档更新 | ✅ 完成 | README.md/DOCUMENTATION.md/项目开发手册同步更新 |
+
+**v2.3.1 验证结果**：
+
+| 环节 | 状态 | 说明 |
+|------|------|------|
+| T536 波形采集 | ✅ | A相加压(UA RMS≈236V), B/C相开路(UB/UC≈1.2V) |
+| USB ECM 传输 | ✅ | 24字节协议头 + 7182字节波形, CRC32校验通过 |
+| Heuristic AI 推理 | ✅ | IF=0.8000(异常), CNN=3(严重异常), 置信度0.90 |
+| LLM 异常触发 | ✅ | 检测到 IF>0.4, 自动调用 RKLLM |
+| RKLLM 根因分析 | ✅ | 耗时95.88s, 评估"high", 返回异常解释+治理建议 |
+| RKLLM 服务管理 | ✅ | systemctl 管理, 支持手动启停和状态查看 |
+
+**RKLLM 部署架构**：
+
+```
+┌─────────────────────────────────────────────┐
+│              RK3576 算力模组                │
+│                                             │
+│  ┌─────────────┐   ┌───────────────────┐   │
+│  │ AI 推理服务 │──▶│ RKLLM 大模型服务   │   │
+│  │ (9090端口)   │   │ (8080端口)        │   │
+│  └──────┬──────┘   └───────────────────┘   │
+│         │                          ▲        │
+│         │                          │        │
+│  ┌──────┴──────┐           ┌──────┴──────┐ │
+│  │ Heuristic/  │           │ qwen3-1.7b │ │
+│  │ NPU 推理    │           │ .rkllm      │ │
+│  └─────────────┘           └──────────────┘ │
+└─────────────────────────────────────────────┘
+```
+
+**RKLLM 服务管理命令**：
+
+```bash
+# 查看 RKLLM 服务状态
+systemctl status rkllm-server
+
+# 启动/停止 RKLLM 服务
+systemctl start rkllm-server
+systemctl stop rkllm-server
+
+# 查看 RKLLM 日志
+journalctl -u rkllm-server -f
+
+# 或使用项目管理脚本
+./scripts/rk3576_ai_service.sh rkllm-status
+./scripts/rk3576_ai_service.sh rkllm-restart
+```
+
+**RKLLM API 接口**：
+
+| 接口 | URL | 说明 |
+|------|-----|------|
+| 健康检查 | GET http://127.0.0.1:8080/health | 返回服务状态 |
+| 模型列表 | GET http://127.0.0.1:8080/v1/models | 返回可用模型 |
+| 聊天补全 | POST http://127.0.0.1:8080/v1/chat/completions | 发送对话请求 |
+| 流式输出 | POST http://127.0.0.1:8080/v1/chat/completions | stream=true 参数 |
 
 ### v2.3.0 (2026-08-13) — 字节序、重连机制与推理模式修复版
 

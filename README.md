@@ -2,7 +2,7 @@
 
 > **项目全称**：基于终端交流采样波形数据的电能质量 AI 应用 —— 新能源与充电桩接入影响评估
 > **目标平台**：全志 T536（4×Cortex-A55 + E907 RISC-V） + 钜泉 HT7627S（7 通道 24bit AFE） + 瑞芯微 RK3576（外挂算力模组，USB ECM 互连）
-> **版本**：v2.3.0 ｜ **日期**：2026-08-13
+> **版本**：v2.3.1 ｜ **日期**：2026-08-13
 > **许可证**：内部技术方案验证工程，仅供项目团队使用
 
 ---
@@ -120,9 +120,12 @@ pq_ai/
 │                   │ iForest    ││ 自编码器   ││ 1D-CNN     │          │
 │                   │ 异常检测   ││ AE 重构    ││ 事件分类   │          │
 │                   └────────────┘└────────────┘└────────────┘          │
-│                                                                       │
+│                          │                                            │
+│                          ▼ (异常触发)                                  │
 │                   ┌──────────────────────────────┐                     │
-│                   │ 大模型 / 其他 AI 算法（后续） │                     │
+│                   │   RKLLM 大模型服务           │                     │
+│                   │   (qwen3-1.7b-rk3576)        │                     │
+│                   │   异常根因分析 + 治理建议     │                     │
 │                   └──────────────────────────────┘                     │
 └───────────────────────────────────────────────────────────────────────┘
 ```
@@ -131,13 +134,15 @@ pq_ai/
 1. T536+HT7627S 采样 → 波形采集 → 原始波形数据
 2. 原始波形通过 USB ECM 二进制协议发送给 RK3576（24字节协议头 + 7182字节波形数据）
 3. RK3576 解析波形 → 计算 RMS → 提取 27 维特征向量 → 运行 iForest/AE/CNN1D 推理
-4. RK3576 返回 48 字节 AI 推理响应包（iForest得分、AE得分、CNN分类及置信度）
-5. T536 接收结果 → 场景识别 → MQTT 上报 + 治理建议
+4. **异常触发 LLM**：if_score > 0.4 时自动调用 RKLLM 进行根因分析
+5. RK3576 返回 AI 推理结果 + LLM 分析（含异常解释、故障诊断、治理建议）
+6. T536 接收结果 → 场景识别 → MQTT 上报 + 治理建议
 
-**已验证的真实硬件流程**（v2.2.0）：
+**已验证的真实硬件流程**（v2.3.1）：
 - T536 A相加压（UA RMS≈236V），B/C相开路（UB/UC RMS≈1.2V）
-- 完整业务链路：T536采集→TCP发送→RK3576解析→特征提取→AI推理→返回结果
-- AI推理结果正确：iForest=1.0000（异常），CNN=3（单相开路），置信度0.90
+- 完整业务链路：T536采集→TCP发送→RK3576解析→特征提取→AI推理→LLM根因分析
+- AI推理结果正确：IF=0.8000（异常），CNN=3（严重异常），置信度0.90
+- LLM调用成功：耗时95.88s，评估结果"high"，含异常解释和治理建议
 
 ---
 
@@ -280,8 +285,32 @@ file pq_sim
 | **响应速度** | < 0.01 ms | ~0.5 ms (NPU) / ~6 ms (CPU) |
 | **稳定性** | ✅ 稳定可预测 | ⚠️ 依赖模型训练 |
 | **适用阶段** | 当前生产使用 | 模型训练完成后 |
-| **异常检测** | 电压变异系数 (CV) | iForest 模型 |
+| **异常检测** | 多指标综合检测 (CV+电压偏差+不平衡度) | iForest 模型 |
 | **事件分类** | 阈值判定规则 | CNN1D 模型 |
+| **LLM 集成** | ✅ 支持 (异常时调用 RKLLM) | ✅ 支持 |
+
+### RKLLM 大模型集成
+
+RK3576 上已部署 RKLLM 大模型服务，AI 推理服务检测到异常时自动调用 RKLLM 进行根因分析：
+
+| 组件 | 配置 |
+|------|------|
+| **模型** | qwen3-1.7b-rk3576.rkllm (1.5GB) |
+| **服务端口** | 127.0.0.1:8080 |
+| **推理模式** | RKNN NPU 加速 |
+| **触发条件** | IF > 0.4 或 CNN 异常分类 或 AE > 100 |
+| **响应内容** | 异常解释、故障诊断、治理建议 |
+| **响应时间** | ~30-95s (首次加载较慢) |
+
+**LLM 调用日志示例**：
+```
+[异常检测] seq=1, IF=0.8000, CNN=3(谐波), 置信度=0.9000, 场景=S3
+[异常检测] 启动LLM根因分析 seq=1
+[ai.llm_advisor] 检测到异常, 调用 LLM 辅助决策...
+[LLM决策] seq=1, 分析耗时=95875ms, 
+          评估={"severity": "high", "summary": "AI判定: 异常 (iForest=0.80)", 
+          "has_llm_support": true}
+```
 
 ### 切换方式
 
@@ -295,23 +324,31 @@ python integrated_inference_service.py --inference-mode npu        # 实验性�
 inference_mode = heuristic  # 改为 npu 启用 NPU 模式
 ```
 
-### Heuristic 模式计算逻辑
+### Heuristic 模式计算逻辑 (v2.3.1 改进版)
 
-Heuristic 模式基于物理启发式规则进行确定性计算：
+Heuristic 模式基于物理启发式规则进行多指标综合检测：
 
-1. **if_score（异常检测分数）**
-   - 计算三相电压 RMS 的变异系数 (CV)
-   - `if_score = max_voltage_deviation / max_voltage`
-   - 范围：[0, 1]，0=正常，1=严重异常
+1. **变异系数分数 (cv_score)**
+   - `cv_score = min(cv * 2.0, 1.0)` — 放大系数使 0.3 CV 变为 0.6
+   
+2. **电压偏离检测 (deviation_score)**
+   - 正常范围: 220V ± 20% (176V - 264V)
+   - `deviation_score = max_deviation * 3.0`
+   
+3. **三相不平衡度检测 (unbalance_score)**
+   - `unbalance_score = unbalance_pct / 50.0`
+   
+4. **综合 IF 分数**
+   - `if_score = max(cv_score, deviation_score * 0.8, unbalance_score * 0.6)`
 
-2. **ae_score（重构误差）**
-   - 基于 if_score 的确定性映射
-   - `ae_score = f(if_score)`
-   - 范围：[0, 1]
+5. **异常判定条件 (满足任一即触发)**
+   - `if_score > 0.4` 或 `cnn_class > 0` 或 `ae_score > 100`
 
-3. **cnn_class（事件分类）**
-   - 根据 if_score 和三相不平衡度进行阈值判定
-   - 0=正常, 1=暂降, 2=暂升, 3=谐波, 4=不平衡, 5=过载, 6=瞬态
+6. **CNN 分类**
+   - IF > 0.6: class=3 (严重异常, 谐波)
+   - IF > 0.4: class=2 (中度异常)
+   - IF > 0.25: class=1 (轻度异常)
+   - 其他: class=0 (正常)
 
 ---
 
@@ -348,10 +385,13 @@ python3 -u app/integrated_inference_service.py \
     --host 192.168.100.1 \
     --port 9090
 
-# Step 6: 查看服务状态和日志
+# Step 5: 查看服务状态和日志
 ./scripts/rk3576_ai_service.sh status   # 查看状态
 ./scripts/rk3576_ai_service.sh logs     # 查看最近日志
 tail -f logs/ai_server_*.log            # 实时查看
+
+# Step 6: 验证 RKLLM 连通性 (可选)
+python3 test_rkllm_connectivity.py      # 测试 RKLLM 服务
 
 # Step 7: 停止服务
 ./scripts/rk3576_ai_service.sh stop
@@ -447,9 +487,44 @@ ssh -p 8888 csg@192.168.14.101 'cd /home/csg/wave_sender_test && ./scripts/t536_
 ssh cat@192.168.100.1 'cd /home/cat/pq_ai_v3 && ./scripts/rk3576_ai_service.sh status'
 ssh cat@192.168.100.1 'cd /home/cat/pq_ai_v3 && ./scripts/rk3576_ai_service.sh logs 20'
 
+# RKLLM 服务管理
+ssh cat@192.168.100.1 'cd /home/cat/pq_ai_v3 && ./scripts/rk3576_ai_service.sh rkllm-status'
+ssh cat@192.168.100.1 'cd /home/cat/pq_ai_v3 && ./scripts/rk3576_ai_service.sh rkllm-restart'
+
 # 一键停止所有服务
 ssh -p 8888 csg@192.168.14.101 'cd /home/csg/wave_sender_test && ./scripts/t536_wave_service.sh stop'
 ssh cat@192.168.100.1 'cd /home/cat/pq_ai_v3 && ./scripts/rk3576_ai_service.sh stop'
+```
+
+### RKLLM 大模型服务管理
+
+RK3576 AI 服务管理脚本已集成 RKLLM 服务管理：
+
+```bash
+# 查看 RKLLM 状态
+./scripts/rk3576_ai_service.sh rkllm-status
+# 预期: RKLLM 服务运行中 (pid: 12345, 端口: 8080)
+
+# 重启 RKLLM 服务
+./scripts/rk3576_ai_service.sh rkllm-restart
+
+# 查看 RKLLM 日志
+./scripts/rk3576_ai_service.sh rkllm-logs
+
+# 测试 RKLLM 连通性
+python3 test_rkllm_connectivity.py
+# 测试内容: 健康检查、模型列表、聊天补全、流式输出
+```
+
+**RKLLM 服务启动顺序**：
+```
+mosquitto (MQTT broker)
+    ↓
+rkllm-server (大模型推理服务, 端口 8080)
+    ↓
+rkllm-mqtt-bridge (MQTT 桥接)
+    ↓
+AI 推理服务 (本项目, 端口 9090)
 ```
 
 ---
@@ -740,6 +815,37 @@ def _accept_loop(self):
 ---
 
 ## 版本历史
+
+### v2.3.1 (2026-08-13) — RKLLM 集成与异常检测优化版
+
+- **RKLLM 大模型集成**：
+  - RK3576 上部署 qwen3-1.7b-rk3576 大模型服务
+  - AI 推理服务检测到异常时自动调用 RKLLM 进行根因分析
+  - 异常触发条件：IF > 0.4 或 CNN 异常分类 或 AE > 100
+  - LLM 返回异常解释、故障诊断、治理建议
+  - 响应时间 ~30-95s (首次加载较慢)
+
+- **异常检测逻辑优化**：
+  - Heuristic 模式新增多指标综合检测
+  - 变异系数放大系数：cv_score = min(cv * 2.0, 1.0)
+  - 电压偏离检测：基于 220V ± 20% 范围
+  - 三相不平衡度检测：unbalance_score = unbalance_pct / 50.0
+  - 综合 IF 分数：取三项最大值
+  - 降低异常判定阈值，支持多种异常类型检测
+
+- **服务管理脚本增强**：
+  - rk3576_ai_service.sh 集成 RKLLM 服务管理
+  - 新增 rkllm-status、rkllm-restart、rkllm-logs 命令
+  - 启动顺序：mosquitto → rkllm-server → rkllm-mqtt-bridge → AI 服务
+
+- **新增测试工具**：
+  - test_rkllm_connectivity.py：验证 RKLLM 服务连通性
+  - 测试内容：健康检查、模型列表、聊天补全、流式输出
+
+- **真实硬件验证**：
+  - T536 A相加压 B/C相开路场景
+  - AI 推理：IF=0.8000 (异常), CNN=3 (严重异常), 置信度 0.90
+  - LLM 调用成功：耗时 95.88s, 评估结果 "high"
 
 ### v2.3.0 (2026-08-13) — 字节序、重连机制与推理模式修复版
 
