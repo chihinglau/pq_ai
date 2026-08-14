@@ -24,8 +24,8 @@ set -e
 
 # ========== 配置 ==========
 APP_NAME="PQ_AI_Service"
-PROCESS_PATTERN="integrated_inference_service"
-SCRIPT_NAME="integrated_inference_service.py"
+PROCESS_PATTERN="wave_inference_server"
+SCRIPT_NAME="wave_inference_server_v5_npu.py"
 
 # 路径配置
 APP_DIR="/home/cat/pq_ai_v3"
@@ -539,7 +539,7 @@ do_start_ai() {
     local log_file="${LOG_DIR}/ai_server_$(date +%Y%m%d_%H%M%S).log"
     
     nohup python3 -u "app/${SCRIPT_NAME}" \
-        --device rk3576 \
+        --model "${MODEL_DIR}/cnn1d_8class.rknn" \
         --host "${SERVICE_HOST}" \
         --port "${SERVICE_PORT}" \
         --log-level "${LOG_LEVEL}" \
@@ -847,35 +847,27 @@ case "${1:-}" in
         do_llm_logs "${2:-50}"
         ;;
     
-    # AI 推理服务管理
+    # AI 推理服务管理 (使用 NPU)
     ai-start)
-        do_start_ai
+        cd "${APP_DIR}/scripts" && ./npu_ai_service.sh start
         ;;
     ai-stop)
-        cleanup_ai_processes
-        log_ok "AI 推理服务已停止"
+        cd "${APP_DIR}/scripts" && ./npu_ai_service.sh stop
         ;;
     ai-restart)
-        cleanup_ai_processes
-        sleep 2
-        do_start_ai
+        cd "${APP_DIR}/scripts" && ./npu_ai_service.sh restart
         ;;
     ai-status)
-        echo ""
-        echo "============================================"
-        echo "  AI 推理服务状态"
-        echo "============================================"
-        echo ""
-        local processes=$(pgrep -f "${PROCESS_PATTERN}" 2>/dev/null || true)
-        if [ -n "${processes}" ]; then
-            echo -e "  ${GREEN}[运行中]${RESET}"
-            echo "${processes}" | while read pid; do
-                local etime=$(ps -p "${pid}" -o etime= 2>/dev/null || echo "unknown")
-                echo "    PID: ${pid}, 运行时长: ${etime}"
-            done
-        else
-            echo -e "  ${RED}[已停止]${RESET}"
-        fi
+        cd "${APP_DIR}/scripts" && ./npu_ai_service.sh status
+        ;;
+    ai-logs)
+        cd "${APP_DIR}/scripts" && ./npu_ai_service.sh logs "${2:-50}"
+        ;;
+    ai-test)
+        cd "${APP_DIR}/scripts" && ./npu_ai_service.sh test
+        ;;
+    ai-benchmark)
+        cd "${APP_DIR}/scripts" && ./npu_ai_service.sh benchmark
         ;;
     
     help|--help|-h|"")

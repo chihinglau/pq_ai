@@ -2,7 +2,7 @@
 
 > **项目全称**：基于终端交流采样波形数据的电能质量 AI 应用 —— 新能源与充电桩接入影响评估
 > **目标平台**：全志 T536（4×Cortex-A55 + E907 RISC-V） + 钜泉 HT7627S（7 通道 24bit AFE） + 瑞芯微 RK3576（外挂算力模组，USB ECM 互连）
-> **版本**：v2.3.1 ｜ **日期**：2026-08-13
+> **版本**：v2.4.0 ｜ **日期**：2026-08-14
 > **许可证**：内部技术方案验证工程，仅供项目团队使用
 
 ---
@@ -45,7 +45,7 @@ pq_ai/
 │   ├── comm/                      #   通信层（proto_mqtt / time_sync / usb_ecm）
 │   ├── utils/                     #   工具层（ring_buffer / json_builder / sqlite_wrapper / pq_config）
 │   ├── sim/                       #   软模拟层（hal_sim / sim_main / rk3576_inference_server.py）
-│   ├── app/                       #   嵌入式真实入口（wave_export_arm.c / wave_sender_arm.c / wave_inference_server_v2.py）
+│   ├── app/                       #   嵌入式真实入口（wave_export_arm.c / wave_sender_arm.c / wave_inference_server_v2.py / wave_inference_server_v5_npu.py）
 │   ├── cmake/                     #   aarch64 交叉编译工具链
 │   ├── scripts/                   #   构建/运行/部署脚本
 │   ├── docs/                      #   项目开发手册 + Linux 环境技术方案
@@ -138,11 +138,17 @@ pq_ai/
 5. RK3576 返回 AI 推理结果 + LLM 分析（含异常解释、故障诊断、治理建议）
 6. T536 接收结果 → 场景识别 → MQTT 上报 + 治理建议
 
-**已验证的真实硬件流程**（v2.3.1）：
-- T536 A相加压（UA RMS≈236V），B/C相开路（UB/UC RMS≈1.2V）
-- 完整业务链路：T536采集→TCP发送→RK3576解析→特征提取→AI推理→LLM根因分析
-- AI推理结果正确：IF=0.8000（异常），CNN=3（严重异常），置信度0.90
-- LLM调用成功：耗时95.88s，评估结果"high"，含异常解释和治理建议
+**已验证的真实硬件流程**（v2.4.0）：
+- T536 A相加压（UA RMS≈235V），B/C相开路（UB/UC RMS≈1.2V）
+- 完整业务链路：T536采集→TCP发送→RK3576解析→特征提取→NPU推理→AI响应
+- AI推理结果正确：CNN=7（three_loss），置信度0.92
+- RKLLM 与 RKNN 模型共存验证通过：Core 0 (RKLLM) + Core 1 (RKNN NPU)
+
+**AI 响应扩展**（v2.4.0）：
+- 响应格式从 35 字节扩展为 63 字节
+- 新增 7 通道有效值：UA/UB/UC/IA/IB/IC/IZ
+- 格式：`<IBQIfffBBfffffffI` (17项)
+- CRC32 校验：基于 Payload 前 59 字节
 
 ---
 
@@ -243,6 +249,24 @@ file pq_sim
 
 **环境**：WSL Ubuntu 26.04 + GCC 15.2.0 + Make 4.4.1 + CMake 4.2.3
 **真实硬件**：T536 + RK3576 + HT7627S
+
+### v2.4.0 RK3576 NPU 推理全链路验证
+
+| 环节 | 状态 | 说明 |
+|------|------|------|
+| RKNN 模型部署 | ✅ | cnn1d_8class.rknn (1.4MB) |
+| NPU 推理服务 | ✅ | wave_inference_server_v5_npu.py |
+| V2 协议通信 | ✅ | 7194字节波形帧，CRC32校验 |
+| AI 响应解析 | ✅ | 63字节扩展格式，7通道有效值 |
+| RKLLM 共存 | ✅ | Core 0 (RKLLM) + Core 1 (RKNN NPU) |
+| 推理性能 | ✅ | 2-3ms/周期，3/3成功 |
+
+**NPU 推理结果**（A相加压，B/C相开路）：
+```
+周期 1: UA=235.273V, UB=1.200V, UC=1.188V → three_loss (0.92)
+周期 2: UA=235.316V, UB=1.189V, UC=1.181V → three_loss (0.92)
+周期 3: UA=235.333V, UB=1.176V, UC=1.165V → three_loss (0.92)
+```
 
 ### v2.2.0 真实硬件全链路验证
 
@@ -787,6 +811,8 @@ def _accept_loop(self):
 ## 文档
 
 - [项目开发手册（完整复现版）](pq_ai_terminal/docs/项目开发手册（完整复现版）.md) — 新 PC 环境复现、新人培训、维护指南
+- [RK3576 NPU 模型训练与部署技术文档](pq_ai_terminal/docs/RK3576_NPU模型训练与部署技术文档.md) — NPU 模型部署全流程
+- [波形数据格式与通信协议详解](pq_ai_terminal/docs/波形数据格式与通信协议详解.md) — V2 协议规范
 - [项目开发手册](pq_ai_terminal/docs/项目开发手册.md) — 模块功能详解
 - [Linux 环境技术方案](pq_ai_terminal/docs/Linux环境技术方案.md) — WSL 部署技术方案
 - [MATLAB 仿真 README](matlab_sim/README.md) — MATLAB 子项目说明
@@ -815,6 +841,40 @@ def _accept_loop(self):
 ---
 
 ## 版本历史
+
+### v2.4.0 (2026-08-14) — RK3576 NPU 推理部署与 AI 响应扩展版
+
+- **RK3576 NPU 推理部署**：
+  - 部署 RKNN 模型 `cnn1d_8class.rknn` 到 RK3576
+  - 实现 `wave_inference_server_v5_npu.py` 基于 RKNN Toolkit Lite2 的 NPU 推理服务
+  - NPU Core 1 与 RKLLM Core 0 隔离，实现多模型共存
+  - 推理延迟 2-3ms，精度 95.8%
+
+- **AI 响应格式扩展**：
+  - 响应格式从 35 字节扩展为 63 字节
+  - 新增 7 通道有效值字段：UA/UB/UC/IA/IB/IC/IZ
+  - 格式：`<IBQIfffBBfffffffI` (17项)
+  - CRC32 校验：基于 Payload 前 59 字节
+  - 更新 C 端 `wave_sender_arm.c` 解析逻辑
+
+- **通信协议更新**：
+  - 更新 `docs/波形数据格式与通信协议详解.md` 至 v1.2
+  - 新增 CNN 分类 class 7 (three_loss)
+  - 完善 V2 协议帧格式说明
+
+- **交叉编译流程固化**：
+  - 使用 GCC Linaro 5.3.1 编译 32 位 ARM 程序
+  - 部署流程：交叉编译服务器 → SCP 上传 → T536 解压部署
+
+- **真实硬件验证**：
+  - T536 A相加压(UA RMS≈235V), B/C相开路(UB/UC≈1.2V)
+  - AI 推理：CNN=7 (three_loss), 置信度 0.92
+  - 3/3 周期 100% 成功率
+  - RKLLM + RKNN 双模型共存验证通过
+
+- **新增技术文档**：
+  - `docs/RK3576_NPU模型训练与部署技术文档.md`：NPU 模型训练与部署全流程
+  - `docs/波形数据格式与通信协议详解.md`：V2 协议规范 v1.2
 
 ### v2.3.1 (2026-08-13) — RKLLM 集成与异常检测优化版
 
@@ -941,6 +1001,6 @@ def _accept_loop(self):
 ## 维护信息
 
 - **维护团队**：嵌入式软件团队 + 算法仿真团队
-- **文档版本**：v2.3.0（2026-08-13）
+- **文档版本**：v2.4.0（2026-08-14）
 - **版本权威源**：[pq_ai_terminal/include/pq_version.h](pq_ai_terminal/include/pq_version.h)
 - **GitHub**：[https://github.com/chihinglau/pq_ai](https://github.com/chihinglau/pq_ai)

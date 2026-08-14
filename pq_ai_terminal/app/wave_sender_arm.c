@@ -9,10 +9,11 @@
  *   CRC32 (4字节): 头部+数据的校验值
  *   Payload (N字节): 波形数据
  * 
- * AI 响应 (35字节):
+ * AI 响应 (63字节扩展格式，含7通道有效值):
  *   magic(4) + resp_type(1) + timestamp(8) + cycle_seq(4) + 
  *   if_score(4) + ae_score(4) + cnn_confidence(4) + cnn_class(1) + 
- *   scene_id(1) + crc32(4)
+ *   scene_id(1) + ua_rms(4) + ub_rms(4) + uc_rms(4) +
+ *   ia_rms(4) + ib_rms(4) + ic_rms(4) + iz_rms(4) + crc32(4)
  * 
  * 用法: wave_sender_arm [options]
  *   --cycles N       采集周期数 (默认5)
@@ -93,8 +94,8 @@ typedef struct tag_WAVEFORM_SAMPLER_DEVICE {
 /* 帧头大小 (不包括CRC32) */
 #define FRAME_HEADER_SIZE 14
 
-/* AI 响应负载大小 (V2帧内的payload) */
-#define AI_RESPONSE_PAYLOAD_SIZE 35
+/* AI 响应负载大小 (V2帧内的payload, 扩展格式含7通道有效值) */
+#define AI_RESPONSE_PAYLOAD_SIZE 63
 
 /* AI 响应命令类型 (V2协议) */
 #define CMD_AI_RESULT 0x07
@@ -148,7 +149,7 @@ typedef struct __attribute__((packed)) {
 } proto_header_v2_t;
 /* 总计: 4+1+1+4+4 = 14字节 */
 
-/* AI推理响应 - 35字节 (使用packed防止对齐填充) */
+/* AI推理响应 - 63字节扩展格式 (使用packed防止对齐填充) */
 typedef struct __attribute__((packed)) {
     uint32_t magic;         /* 魔数: 0x57415645 (4) */
     uint8_t  resp_type;     /* 响应类型: 0=OK, 2=ANOMALY (1) */
@@ -159,9 +160,16 @@ typedef struct __attribute__((packed)) {
     float    cnn_confidence;/* CNN置信度 (4) */
     uint8_t  cnn_class;     /* CNN事件分类 (1) */
     uint8_t  scene_id;      /* 场景ID (1) */
+    float    ua_rms;        /* A相电压有效值 (4) */
+    float    ub_rms;        /* B相电压有效值 (4) */
+    float    uc_rms;        /* C相电压有效值 (4) */
+    float    ia_rms;        /* A相电流有效值 (4) */
+    float    ib_rms;        /* B相电流有效值 (4) */
+    float    ic_rms;        /* C相电流有效值 (4) */
+    float    iz_rms;        /* 零序电流有效值 (4) */
     uint32_t crc32;         /* CRC32校验 (4) */
 } ai_response_v2_t;
-/* 总计: 4+1+8+4+4+4+4+1+1+4 = 35字节 */
+/* 总计: 4+1+8+4+4+4+4+1+1+4*7+4 = 63字节 */
 
 /* ========== 日志系统 ========== */
 static FILE *g_log_fp = NULL;
@@ -296,15 +304,23 @@ static int send_waveform_v2(int sock_fd, uint8_t *wave_data, int wave_len,
     header.seq = seq;
     header.payload_len = wave_len;
     
-    /* 组合头和数据 */
+    /* 
+     * 帧格式: [header(14)][crc32(4)][payload]
+     * 与 Python protocol_v2.py 的 DataFrame.decode() 一致
+     */
+    
+    /* 先计算 CRC32 (基于 header + payload) */
+    uint8_t temp_buf[WAVE_BUF_SIZE + FRAME_HEADER_SIZE];
+    memcpy(temp_buf, &header, sizeof(header));
+    memcpy(temp_buf + sizeof(header), wave_data, wave_len);
+    crc = crc32_calc(temp_buf, sizeof(header) + wave_len);
+    
+    /* 按照 [header][crc][payload] 格式组装发送缓冲区 */
     memcpy(send_buf, &header, sizeof(header));
-    memcpy(send_buf + sizeof(header), wave_data, wave_len);
+    memcpy(send_buf + sizeof(header), &crc, 4);
+    memcpy(send_buf + sizeof(header) + 4, wave_data, wave_len);
     
-    /* 计算 CRC32 (头部+数据) */
-    crc = crc32_calc(send_buf, sizeof(header) + wave_len);
-    memcpy(send_buf + sizeof(header) + wave_len, &crc, 4);
-    
-    total_len = sizeof(header) + wave_len + 4;  /* header + payload + crc */
+    total_len = sizeof(header) + 4 + wave_len;  /* header + crc + payload */
     
     LOG_INFO("Sending waveform V2: seq=%u, payload_len=%d, total=%d bytes", 
              seq, wave_len, total_len);
@@ -350,41 +366,49 @@ static int receive_ai_result_v2(int sock_fd, ai_response_v2_t *result, int timeo
     uint32_t magic;
     uint8_t version, cmd;
     uint32_t seq, payload_len;
-    
-    /* 设置超时 */
-    tv.tv_sec = timeout_ms / 1000;
-    tv.tv_usec = (timeout_ms % 1000) * 1000;
+    int ack_count = 0;
+    const int MAX_ACK_SKIP = 10;  /* 最多跳过 10 个 ACK 帧 */
     
     LOG_INFO("Waiting for AI response (V2 frame, timeout: %dms)...", timeout_ms);
     
-    /* 等待数据 */
-    FD_ZERO(&readfds);
-    FD_SET(sock_fd, &readfds);
-    
-    ret = select(sock_fd + 1, &readfds, NULL, NULL, &tv);
-    if (ret <= 0) {
-        if (ret == 0) {
-            LOG_ERROR("Timeout waiting for AI response (select returned 0)");
-        } else {
-            LOG_ERROR("select() failed (errno=%d: %s)", errno, strerror(errno));
+    /* 循环等待，跳过 ACK 帧直到收到 AI_RESULT */
+    while (ack_count <= MAX_ACK_SKIP) {
+        /* 设置超时 */
+        tv.tv_sec = timeout_ms / 1000;
+        tv.tv_usec = (timeout_ms % 1000) * 1000;
+        
+        /* 等待数据 */
+        FD_ZERO(&readfds);
+        FD_SET(sock_fd, &readfds);
+        
+        ret = select(sock_fd + 1, &readfds, NULL, NULL, &tv);
+        if (ret <= 0) {
+            if (ret == 0) {
+                LOG_ERROR("Timeout waiting for AI response (select returned 0)");
+            } else {
+                LOG_ERROR("select() failed (errno=%d: %s)", errno, strerror(errno));
+            }
+            return -1;
         }
-        return -1;
-    }
-    
-    /* 步骤1: 读取 V2 帧头 (14字节) */
-    header_ptr = frame_buf;
-    n = recv(sock_fd, header_ptr, FRAME_HEADER_SIZE, 0);
-    if (n < FRAME_HEADER_SIZE) {
-        LOG_ERROR("Incomplete V2 header: got %d bytes, expected %d", n, FRAME_HEADER_SIZE);
-        return -1;
-    }
-    
-    /* 解析 V2 帧头 */
-    magic = read_le32(header_ptr);
-    version = header_ptr[4];
-    cmd = header_ptr[5];
-    seq = read_le32(header_ptr + 6);
-    payload_len = read_le32(header_ptr + 10);
+        
+        /* 步骤1: 读取 V2 帧头 (14字节) - 确保完整读取 */
+        header_ptr = frame_buf;
+        n = 0;
+        while (n < FRAME_HEADER_SIZE) {
+            int ret = recv(sock_fd, header_ptr + n, FRAME_HEADER_SIZE - n, 0);
+            if (ret <= 0) {
+                LOG_ERROR("Incomplete V2 header: got %d bytes, expected %d", n, FRAME_HEADER_SIZE);
+                return -1;
+            }
+            n += ret;
+        }
+        
+        /* 解析 V2 帧头 */
+        magic = read_le32(header_ptr);
+        version = header_ptr[4];
+        cmd = header_ptr[5];
+        seq = read_le32(header_ptr + 6);
+        payload_len = read_le32(header_ptr + 10);
     
     LOG_DEBUG("V2 frame header: magic=0x%08X, ver=%d, cmd=%d, seq=%u, payload_len=%u",
               magic, version, cmd, seq, payload_len);
@@ -395,7 +419,29 @@ static int receive_ai_result_v2(int sock_fd, ai_response_v2_t *result, int timeo
         return -1;
     }
     
-    /* 验证命令类型 */
+    /* 跳过 ACK/HEARTBEAT 帧 (RK3576 先回复 ACK/HEARTBEAT，再发送 AI 结果) */
+    if (cmd == CMD_ACK || cmd == 0x02) {
+        ack_count++;
+        LOG_DEBUG("Skipping ACK/HEARTBEAT frame (cmd=%d, seq=%u, payload_len=%u), waiting for AI_RESULT...", cmd, seq, payload_len);
+        /* 读取并丢弃 CRC32 (4字节) + 负载 */
+        uint8_t skip_buf[1024];
+        uint32_t skip_total = 4 + payload_len;  /* CRC32 + payload */
+        uint32_t skip_read = 0;
+        while (skip_read < skip_total) {
+            uint32_t to_read = skip_total - skip_read;
+            if (to_read > sizeof(skip_buf)) to_read = sizeof(skip_buf);
+            int ret = recv(sock_fd, skip_buf, to_read, 0);
+            if (ret <= 0) {
+                LOG_ERROR("Failed to skip frame data: read %u/%u bytes", skip_read, skip_total);
+                return -1;
+            }
+            skip_read += ret;
+        }
+        LOG_DEBUG("Skipped %u bytes (CRC32 + payload)", skip_total);
+        continue;  /* 继续循环等待 AI_RESULT */
+    }
+    
+    /* 验证命令类型 - 必须是 AI_RESULT */
     if (cmd != CMD_AI_RESULT) {
         LOG_ERROR("Not an AI result frame: cmd=%d (expected %d)", cmd, CMD_AI_RESULT);
         return -1;
@@ -407,27 +453,41 @@ static int receive_ai_result_v2(int sock_fd, ai_response_v2_t *result, int timeo
         return -1;
     }
     
-    /* 步骤2: 读取 CRC32 (4字节) */
+    /* 步骤2: 读取 CRC32 (4字节) - 确保完整读取 */
     crc_ptr = frame_buf + FRAME_HEADER_SIZE;
-    n = recv(sock_fd, crc_ptr, 4, 0);
-    if (n < 4) {
-        LOG_ERROR("Incomplete CRC32: got %d bytes, expected 4", n);
-        return -1;
+    n = 0;
+    while (n < 4) {
+        int ret = recv(sock_fd, crc_ptr + n, 4 - n, 0);
+        if (ret <= 0) {
+            LOG_ERROR("Incomplete CRC32: got %d bytes, expected 4", n);
+            return -1;
+        }
+        n += ret;
     }
     
-    /* 步骤3: 读取负载 (AI响应数据, 35字节) */
+    /* 步骤3: 读取负载 (AI响应数据, 35字节) - 确保完整读取 */
     payload_ptr = frame_buf + FRAME_HEADER_SIZE + 4;
-    n = recv(sock_fd, payload_ptr, payload_len, 0);
-    if (n < (int)payload_len) {
-        LOG_ERROR("Incomplete AI payload: got %d bytes, expected %u", n, payload_len);
-        return -1;
+    n = 0;
+    while (n < (int)payload_len) {
+        int ret = recv(sock_fd, payload_ptr + n, payload_len - n, 0);
+        if (ret <= 0) {
+            LOG_ERROR("Incomplete AI payload: got %d bytes, expected %u", n, payload_len);
+            return -1;
+        }
+        n += ret;
     }
     
     LOG_DEBUG("Received V2 frame: header=%d+crc=4+payload=%u bytes", FRAME_HEADER_SIZE, payload_len);
     
-    /* 步骤4: 验证 V2 帧 CRC32 (头部+负载) */
+    /* 步骤4: 验证 V2 帧 CRC32 (基于 header + payload, 不包括 CRC32 本身) */
     received_crc = read_le32(crc_ptr);
-    calc_crc = crc32_calc(frame_buf, FRAME_HEADER_SIZE + payload_len);
+    {
+        /* 构建临时缓冲区: [header][payload] */
+        uint8_t crc_check_buf[FRAME_HEADER_SIZE + AI_RESPONSE_PAYLOAD_SIZE + 256];
+        memcpy(crc_check_buf, frame_buf, FRAME_HEADER_SIZE);
+        memcpy(crc_check_buf + FRAME_HEADER_SIZE, payload_ptr, payload_len);
+        calc_crc = crc32_calc(crc_check_buf, FRAME_HEADER_SIZE + payload_len);
+    }
     if (received_crc != calc_crc) {
         LOG_ERROR("V2 frame CRC32 mismatch: received=0x%08X, calculated=0x%08X", received_crc, calc_crc);
         return -1;
@@ -446,6 +506,13 @@ static int receive_ai_result_v2(int sock_fd, ai_response_v2_t *result, int timeo
         memcpy(&result->cnn_confidence, p, 4); p += 4;
         result->cnn_class = *p++;
         result->scene_id = *p++;
+        memcpy(&result->ua_rms, p, 4); p += 4;
+        memcpy(&result->ub_rms, p, 4); p += 4;
+        memcpy(&result->uc_rms, p, 4); p += 4;
+        memcpy(&result->ia_rms, p, 4); p += 4;
+        memcpy(&result->ib_rms, p, 4); p += 4;
+        memcpy(&result->ic_rms, p, 4); p += 4;
+        memcpy(&result->iz_rms, p, 4); p += 4;
         result->crc32 = read_le32(p); p += 4;
     }
     
@@ -455,7 +522,7 @@ static int receive_ai_result_v2(int sock_fd, ai_response_v2_t *result, int timeo
         return -1;
     }
     
-    /* 验证 AI 响应 CRC32 (基于负载前 31 字节, 不包括 crc32 字段) */
+    /* 验证 AI 响应 CRC32 (基于负载前 59 字节, 不包括 crc32 字段) */
     received_crc = result->crc32;
     calc_crc = crc32_calc(payload_ptr, AI_RESPONSE_PAYLOAD_SIZE - 4);
     if (received_crc != calc_crc) {
@@ -463,8 +530,8 @@ static int receive_ai_result_v2(int sock_fd, ai_response_v2_t *result, int timeo
         return -1;
     }
     
-    /* 打印响应内容 */
-    LOG_INFO("AI Response received (V2 frame, seq=%u):", seq);
+    /* 打印响应内容 (含7通道有效值) */
+    LOG_INFO("AI Response received (V2 frame, seq=%u, %d bytes):", seq, AI_RESPONSE_PAYLOAD_SIZE);
     LOG_INFO("  Magic: 0x%08X", result->magic);
     LOG_INFO("  Response Type: %s (resp_type=%d)", 
             result->resp_type == RESP_OK ? "OK" : "ANOMALY", result->resp_type);
@@ -473,11 +540,20 @@ static int receive_ai_result_v2(int sock_fd, ai_response_v2_t *result, int timeo
     LOG_INFO("  iForest Score: %.4f", result->if_score);
     LOG_INFO("  AE Score: %.4f", result->ae_score);
     LOG_INFO("  CNN Class: %d", result->cnn_class);
-    LOG_INFO("  CNN Confidence: %.2f", result->cnn_confidence);
+    LOG_INFO("  CNN Confidence: %.4f", result->cnn_confidence);
     LOG_INFO("  Scene ID: %d", result->scene_id);
+    LOG_INFO("  电压有效值: UA=%.3fV, UB=%.3fV, UC=%.3fV", 
+             result->ua_rms, result->ub_rms, result->uc_rms);
+    LOG_INFO("  电流有效值: IA=%.3fA, IB=%.3fA, IC=%.3fA, IZ=%.3fA",
+             result->ia_rms, result->ib_rms, result->ic_rms, result->iz_rms);
     LOG_INFO("  CRC32: 0x%08X", result->crc32);
     
     return 0;
+    }
+    
+    /* 超过最大 ACK 跳过次数，返回错误 */
+    LOG_ERROR("Too many ACK frames skipped (%d), no AI_RESULT received", ack_count);
+    return -1;
 }
 
 /* ========== 打印波形摘要 ========== */
@@ -537,6 +613,101 @@ static void print_wave_summary(uint8_t *wave_data, int wave_len)
     }
 }
 
+/* ========== 波形数据格式转换 ========== */
+/*
+ * T536 原始格式: [0x68,0x36][frame_len(4)][frame_seq(1)][pad(3)][cycle_seq(4)][timestamp(10)][channels(7168)]
+ * RK3576 期望格式: [nc(2)][ppc(4)][cs(4)][ts(8)][channels(7168)]
+ */
+static int convert_waveform_format(const uint8_t *raw_data, int raw_len, 
+                                    uint8_t *out_data, int out_buf_size)
+{
+    if (raw_len < 26) {  /* 最小帧头: 2+4+1+3+4+10 = 24 */
+        LOG_ERROR("Raw data too short: %d bytes", raw_len);
+        return -1;
+    }
+    
+    /* 查找帧头 */
+    int header_offset = -1;
+    for (int i = 0; i < raw_len - 1; i++) {
+        if (raw_data[i] == 0x68 && raw_data[i + 1] == 0x36) {
+            header_offset = i;
+            break;
+        }
+    }
+    
+    if (header_offset < 0) {
+        LOG_ERROR("No valid frame header found in raw data");
+        return -1;
+    }
+    
+    /* 解析 T536 原始帧头 */
+    int off = header_offset;
+    uint32_t frame_len = read_le32(&raw_data[off + 2]);
+    uint8_t frame_seq = raw_data[off + 6];
+    
+    /* 跳过 frame_seq(1) + padding(3) = 4字节 */
+    off = header_offset + 7;
+    
+    uint32_t cycle_seq = read_le32(&raw_data[off]);
+    off += 4;
+    
+    /* 解析时间戳: year(1), month(1), day(1), hour(1), minute(1), second(1), us(4) */
+    uint8_t year = raw_data[off];
+    uint8_t month = raw_data[off + 1];
+    uint8_t day = raw_data[off + 2];
+    uint8_t hour = raw_data[off + 3];
+    uint8_t minute = raw_data[off + 4];
+    uint8_t second = raw_data[off + 5];
+    uint32_t us_part = read_le32(&raw_data[off + 6]);
+    off += 10;
+    
+    /* 将时间戳转换为微秒 (简化处理: 使用年月日时分秒 + 微秒部分) */
+    uint64_t timestamp_us = (uint64_t)(year + 2000) * 365LL * 24 * 3600 * 1000000ULL
+                           + (uint64_t)month * 30LL * 24 * 3600 * 1000000ULL
+                           + (uint64_t)day * 24LL * 3600 * 1000000ULL
+                           + (uint64_t)hour * 3600LL * 1000000ULL
+                           + (uint64_t)minute * 60LL * 1000000ULL
+                           + (uint64_t)second * 1000000ULL
+                           + us_part;
+    
+    /* 通道数据起始位置 (跳过帧头后的通道数据) */
+    int channel_offset = off;
+    
+    /* 验证数据完整性 */
+    int expected_size = (channel_offset - header_offset) + WS_WAVEFORM_DATA_SIZE;
+    if (raw_len - header_offset < expected_size) {
+        LOG_ERROR("Raw data incomplete: need %d, have %d", 
+                  expected_size, raw_len - header_offset);
+        return -1;
+    }
+    
+    /* 检查输出缓冲区大小 */
+    int out_size = WS_SINGLE_WAVEFORM_SIZE;
+    if (out_buf_size < out_size) {
+        LOG_ERROR("Output buffer too small: need %d, have %d", out_size, out_buf_size);
+        return -1;
+    }
+    
+    /* 构建 RK3576 格式波形数据 */
+    off = 0;
+    uint16_t nc = WS_CHANNEL_COUNT;
+    uint32_t ppc = WS_POINTS_PER_CYCLE;
+    
+    memcpy(out_data + off, &nc, 2); off += 2;
+    memcpy(out_data + off, &ppc, 4); off += 4;
+    memcpy(out_data + off, &cycle_seq, 4); off += 4;
+    memcpy(out_data + off, &timestamp_us, 8); off += 8;
+    
+    /* 复制通道数据 */
+    memcpy(out_data + off, raw_data + channel_offset, WS_WAVEFORM_DATA_SIZE);
+    off += WS_WAVEFORM_DATA_SIZE;
+    
+    LOG_DEBUG("Converted waveform: nc=%d, ppc=%d, seq=%u, ts=%llu, channels=%d bytes",
+              nc, ppc, cycle_seq, (unsigned long long)timestamp_us, WS_WAVEFORM_DATA_SIZE);
+    
+    return out_size;
+}
+
 /* ========== 主函数 ========== */
 int main(int argc, char *argv[])
 {
@@ -550,6 +721,7 @@ int main(int argc, char *argv[])
     WAVEFORM_SAMPLER_DEVICE_T *wave_dev = NULL;
     HW_DEVICE *dev = NULL;
     uint8_t *wave_buf = NULL;
+    uint8_t *converted_buf = NULL;
     uint32_t send_seq = 0;  /* V2 协议序列号 */
 
     /* 初始化 CRC32 表 */
@@ -650,6 +822,18 @@ int main(int argc, char *argv[])
     }
     LOG_INFO("Buffer allocated: %d bytes", WAVE_BUF_SIZE);
 
+    /* 分配格式转换缓冲区 */
+    converted_buf = (uint8_t *)malloc(WS_SINGLE_WAVEFORM_SIZE);
+    if (converted_buf == NULL) {
+        LOG_ERROR("Memory allocation failed for converted_buf (size=%d)", WS_SINGLE_WAVEFORM_SIZE);
+        free(wave_buf);
+        hal_device_release(dev);
+        hal_exit();
+        if (g_log_fp) fclose(g_log_fp);
+        return 1;
+    }
+    LOG_INFO("Conversion buffer allocated: %d bytes", WS_SINGLE_WAVEFORM_SIZE);
+
     /* ========== 主循环 ========== */
     int success_count = 0;
     int fail_count = 0;
@@ -705,6 +889,17 @@ int main(int argc, char *argv[])
             cycle_seq = read_le32(&wave_buf[7]);
         }
 
+        /* 1.5 格式转换: T536原始格式 -> RK3576期望格式 */
+        LOG_INFO("[STEP 1.5] Converting waveform format...");
+        int converted_len = convert_waveform_format(wave_buf, ret, converted_buf, WS_SINGLE_WAVEFORM_SIZE);
+        if (converted_len <= 0) {
+            LOG_ERROR("Failed to convert waveform format, skipping this cycle");
+            fail_count++;
+            usleep(interval_ms * 1000);
+            continue;
+        }
+        LOG_INFO("Format converted: %d -> %d bytes", ret, converted_len);
+
         /* 2. 连接RK3576并发送 (V2协议) */
         LOG_INFO("[STEP 2] Connecting to RK3576 and sending waveform (V2)...");
         
@@ -718,7 +913,7 @@ int main(int argc, char *argv[])
         
         send_seq++;  /* 递增 V2 协议序列号 */
         
-        int send_ret = send_waveform_v2(sock_fd, wave_buf, ret, send_seq);
+        int send_ret = send_waveform_v2(sock_fd, converted_buf, converted_len, send_seq);
         if (send_ret != 0) {
             LOG_ERROR("Failed to send waveform (V2)");
             close(sock_fd);
@@ -738,7 +933,7 @@ int main(int argc, char *argv[])
             success_count++;
             LOG_INFO("[STEP 3] AI inference result received (V2)");
             
-            /* 4. 显示详细结果 */
+            /* 4. 显示详细结果 (含7通道有效值) */
             LOG_INFO("[STEP 4] ========== AI Inference Result (V2) ==========");
             
             if (ai_result.resp_type == RESP_OK || ai_result.resp_type == RESP_ANOMALY) {
@@ -749,8 +944,15 @@ int main(int argc, char *argv[])
                 LOG_INFO("  iForest: %.4f (0=normal, 1=anomaly)", ai_result.if_score);
                 LOG_INFO("  AE: %.4f", ai_result.ae_score);
                 LOG_INFO("  CNN Class: %d", ai_result.cnn_class);
-                LOG_INFO("  CNN Confidence: %.2f", ai_result.cnn_confidence);
+                LOG_INFO("  CNN Confidence: %.4f", ai_result.cnn_confidence);
                 LOG_INFO("  Scene ID: %d", ai_result.scene_id);
+                
+                /* 显示 7 通道有效值 */
+                LOG_INFO("有效值 (RMS):");
+                LOG_INFO("  电压: UA=%.3fV, UB=%.3fV, UC=%.3fV",
+                        ai_result.ua_rms, ai_result.ub_rms, ai_result.uc_rms);
+                LOG_INFO("  电流: IA=%.3fA, IB=%.3fA, IC=%.3fA, IZ=%.3fA",
+                        ai_result.ia_rms, ai_result.ib_rms, ai_result.ic_rms, ai_result.iz_rms);
                 
                 /* 根据CNN分类结果解释 */
                 switch (ai_result.cnn_class) {
@@ -774,6 +976,9 @@ int main(int argc, char *argv[])
                         break;
                     case 6:
                         LOG_INFO("  Interpretation: Transient pulse");
+                        break;
+                    case 7:
+                        LOG_INFO("  Interpretation: Three-phase loss");
                         break;
                     default:
                         LOG_INFO("  Interpretation: Unknown (class=%d)", ai_result.cnn_class);
@@ -816,6 +1021,7 @@ int main(int argc, char *argv[])
 
     /* 清理 */
     free(wave_buf);
+    free(converted_buf);
     hal_device_release(dev);
     hal_exit();
     

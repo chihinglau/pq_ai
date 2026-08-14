@@ -1,6 +1,6 @@
 # PQ AI Terminal — 开发部署文档
 
-> **版本**：v2.3.1 ｜ **日期**：2026-08-13 ｜ **状态**：已验证
+> **版本**：v2.4.0 ｜ **日期**：2026-08-14 ｜ **状态**：已验证
 > **版本权威源**：`pq_ai_terminal/include/pq_version.h`
 > **GitHub**：[https://github.com/chihinglau/pq_ai](https://github.com/chihinglau/pq_ai)
 
@@ -124,6 +124,17 @@ make sim
 **环境**：WSL Ubuntu 26.04 + GCC 15.2.0 + Make 4.4.1 + CMake 4.2.3
 **真实硬件**：T536 + RK3576 + HT7627S
 
+### v2.4.0 RK3576 NPU 推理全链路验证
+
+| 环节 | 状态 | 说明 |
+|------|------|------|
+| RKNN 模型部署 | ✅ | cnn1d_8class.rknn (1.4MB) |
+| NPU 推理服务 | ✅ | wave_inference_server_v5_npu.py |
+| V2 协议通信 | ✅ | 7194字节波形帧，CRC32校验 |
+| AI 响应解析 | ✅ | 63字节扩展格式，7通道有效值 |
+| RKLLM 共存 | ✅ | Core 0 (RKLLM) + Core 1 (RKNN NPU) |
+| 推理性能 | ✅ | 2-3ms/周期，3/3成功 |
+
 ### v2.2.0 真实硬件全链路验证
 
 | 环节 | 状态 | 说明 |
@@ -153,6 +164,32 @@ make sim
 ---
 
 ## 6. 关键功能实现记录
+
+### v2.4.0 (2026-08-14) — RK3576 NPU 推理部署与 AI 响应扩展版
+
+| 模块 | 状态 | 说明 |
+|------|------|------|
+| RKNN 模型部署 | ✅ 完成 | cnn1d_8class.rknn 模型部署到 RK3576 |
+| NPU 推理服务 | ✅ 完成 | wave_inference_server_v5_npu.py 基于 RKNN Toolkit Lite2 |
+| NPU 核心隔离 | ✅ 完成 | Core 1 (RKNN NPU) + Core 0 (RKLLM) 共存 |
+| AI 响应扩展 | ✅ 完成 | 35→63 字节，添加 7 通道有效值 |
+| V2 协议更新 | ✅ 完成 | 波形数据格式与通信协议详解 v1.2 |
+| 交叉编译固化 | ✅ 完成 | GCC Linaro 5.3.1 编译 ARM 程序 |
+| 真实硬件验证 | ✅ 验证 | 3/3 周期 100% 成功 |
+
+**v2.4.0 验证结果**：
+
+| 环节 | 状态 | 说明 |
+|------|------|------|
+| T536 波形采集 | ✅ | A相加压(UA RMS≈235V), B/C相开路(UB/UC≈1.2V) |
+| USB ECM 传输 | ✅ | 7194字节波形帧，CRC32校验通过 |
+| RKNN NPU 推理 | ✅ | CNN=7(three_loss), 置信度 0.92, 耗时 2-3ms |
+| AI 响应解析 | ✅ | 63字节扩展格式，7通道有效值正确 |
+| RKLLM 共存 | ✅ | RKLLM + RKNN 双模型共存验证通过 |
+
+**新增文档**：
+- `pq_ai_terminal/docs/RK3576_NPU模型训练与部署技术文档.md`
+- `pq_ai_terminal/docs/波形数据格式与通信协议详解.md` (更新至 v1.2)
 
 ### v2.3.1 (2026-08-13) — RKLLM 集成与异常检测优化版
 
@@ -318,18 +355,22 @@ journalctl -u rkllm-server -f
 ### 7.1 待完成项
 
 1. **真实 HT7627S 驱动**：替换 `sim/hal_sim.c` 为 SPI/I2C 驱动
-2. **RK3576 算力模组程序**：在 RK3576 上部署独立 AI 服务程序（替换 compute_module_sim）
-3. **USB ECM 真实驱动**：Linux g_nc / g_ether 配置，T536 与 RK3576 各呈现为虚拟网卡
-4. **大模型部署**：在 RK3576 上部署训练好的 ONNX 模型 → INT8 量化 → RKNN SDK
-5. **E907 RTOS 集成**：核心采集任务迁移至 E907 核
-6. **IEC 61850 / MQTT 完整协议栈**：替换 Stub，支持 TLS
-7. **SQLite 本地存储**：替换 CSV 为嵌入式 SQLite
+2. **E907 RTOS 集成**：核心采集任务迁移至 E907 核
+3. **IEC 61850 / MQTT 完整协议栈**：替换 Stub，支持 TLS 加密
+4. **SQLite 本地存储**：替换 CSV 为嵌入式 SQLite 数据库
+5. **更多 AI 模型部署**：部署 iForest 和 AE 模型到 RK3576 NPU
 
-### 7.2 已知局限
+### 7.2 已完成项
 
-- AI 模型为随机权重 Stub，异常得分仅用于演示流程
+1. ~~RK3576 算力模组程序~~：✅ 已部署 `wave_inference_server_v5_npu.py`
+2. ~~大模型部署~~：✅ RKLLM qwen3-1.7b 已部署
+3. ~~USB ECM 真实驱动~~：✅ T536 ↔ RK3576 USB ECM 通信已验证
+4. ~~RKNN 模型部署~~：✅ cnn1d_8class.rknn 已部署并验证
+
+### 7.3 已知局限
+
+- AI 模型仅包含 CNN1D，iForest 和 AE 为启发式实现
 - 场景识别规则为硬编码，后续应替换为 AI 分类模型
-- Windows 仿真未模拟线路阻抗的动态电压降
 
 ---
 
