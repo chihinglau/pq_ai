@@ -71,10 +71,12 @@ typedef struct tag_WAVEFORM_SAMPLER_DEVICE {
 } WAVEFORM_SAMPLER_DEVICE_T;
 
 /* ========== 常量 ========== */
-#define WS_SINGLE_WAVEFORM_SIZE 7182
 #define WS_POINTS_PER_CYCLE 256
 #define WS_CHANNEL_COUNT 7
-#define WAVE_BUF_SIZE (WS_SINGLE_WAVEFORM_SIZE * 20)
+#define WS_WAVEFORM_HEADER_SIZE 18  /* nc(2) + ppc(4) + cs(4) + ts(8) */
+#define WS_WAVEFORM_DATA_SIZE (WS_CHANNEL_COUNT * WS_POINTS_PER_CYCLE * 4)  /* 7168 bytes */
+#define WS_SINGLE_WAVEFORM_SIZE (WS_WAVEFORM_HEADER_SIZE + WS_WAVEFORM_DATA_SIZE)  /* 7186 bytes */
+#define WAVE_BUF_SIZE (WS_SINGLE_WAVEFORM_SIZE * 20)  /* 143720 bytes buffer for 20 cycles */
 
 /* V2 协议常量 */
 #define PROTO_MAGIC 0x57415632  /* "WV2" - Wave Protocol V2 */
