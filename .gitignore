@@ -71,3 +71,73 @@ node_modules/
 # ==================== Logs / temp ====================
 *.log
 *.tmp
+
+# ==================== Python 缓存 ====================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# ==================== 模型权重文件 (大文件, 需训练生成) ====================
+*.pt
+*.pth
+*.onnx
+*.onnx.data
+*.rknn
+*.rkn
+*.rkllm
+*.npz
+*.mat
+
+# ==================== 二进制包/压缩包 ====================
+*.tar.gz
+*.tgz
+*.zip
+*.7z
+
+# ==================== 共享库/可执行 ====================
+*.so.*
+*.dylib
+
+# ==================== 训练产物目录 ====================
+output/
+pq_ai_terminal/training/output/
+matlab_sim/results/
+matlab_sim/dataset/
+matlab_sim/data/
+
+# ==================== 波形采集数据 (隐私/大文件) ====================
+pq_ai_terminal/wave/COMTRADE/
+
+# ==================== 临时库 (32位系统库副本) ====================
+pq_ai_terminal/temp_lib32/
+
+# ==================== 截图/调试产物 ====================
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+t536_waveform*.png
+
+# ==================== Office 临时锁文件 ====================
+~$*.docx
+~$*.xlsx
+~$*.pptx
+
+# ==================== 敏感配置文件 (含明文凭据) ====================
+pq_ai_terminal/config.ini
+pq_ai_terminal/config_t536.ini
+*.bak
+*.local
+
+# ==================== 部署产物 ====================
+pq_ai_terminal/bin/
+pq_ai_terminal/deploy/wave_sender_arm
+pq_ai_terminal/pq_acq_wave_arm
+pq_ai_terminal/ai_infer_test_arm_armhf.tar.gz
+pq_ai_terminal/ai_rpc_logger_arm_armhf.tar.gz
+pq_ai_terminal/pq_ai_terminal_src.zip
+pq_ai_terminal/update_files.zip
+hal_lib64.tar.gz

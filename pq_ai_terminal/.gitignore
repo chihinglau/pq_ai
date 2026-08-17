@@ -33,3 +33,49 @@ test_*.c
 test_*.exe
 hal_err*.txt
 sim_main.i
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# 模型权重
+*.pt
+*.pth
+*.onnx
+*.rknn
+*.rkn
+*.rkllm
+*.npz
+*.mat
+
+# 二进制包
+*.tar.gz
+*.zip
+
+# 共享库副本
+temp_lib32/
+
+# 训练产物
+training/output/
+output/
+
+# 波形数据
+wave/COMTRADE/
+
+# 敏感配置
+config.ini
+config_t536.ini
+*.bak
+
+# 截图
+*.png
+
+# 部署产物
+bin/
+deploy/wave_sender_arm
+pq_acq_wave_arm
+ai_infer_test_arm_armhf.tar.gz
+ai_rpc_logger_arm_armhf.tar.gz
+pq_ai_terminal_src.zip
+update_files.zip
